@@ -1,0 +1,59 @@
+# docker-compose.yml (for local development)
+version: '3.8'
+
+services:
+  db:
+    image: postgres:14
+    environment:
+      POSTGRES_DB: transcription_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  backend:
+    build: 
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://postgres:password@db:5432/transcription_db
+      - REDIS_URL=redis://redis:6379
+      - GROQ_API_KEY=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
+      - QDRANT_URL=https://72eaf75a-7fac-4f1c-b474-a14311fbb374.eu-west-2-0.aws.cloud.qdrant.io:6333
+      - QDRANT_API_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhY2Nlc3MiOiJtIn0.QlbiWyLfNeaFklbW6XIS0w11vdyOyG05DH8n7bPrhs8
+    depends_on:
+      - db
+      - redis
+    volumes:
+      - ./backend:/app
+      - uploads_data:/app/uploads
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+    depends_on:
+      - backend
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+
+volumes:
+  postgres_data:
+  redis_data:
+  uploads_data:
