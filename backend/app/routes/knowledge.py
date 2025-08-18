@@ -6,7 +6,7 @@ from typing import List, Optional
 import logging
 
 from ..database import get_db
-from ..models import User
+from ..models import User, Transcription, KnowledgeQuery
 from ..services.auth_service import get_current_user
 from ..services.knowledge_service import KnowledgeService
 
@@ -246,7 +246,9 @@ async def search_transcriptions(
         
         qdrant_client = QdrantClient(
             url=settings.QDRANT_URL,
-            api_key=settings.QDRANT_API_KEY
+            api_key=settings.QDRANT_API_KEY,
+            timeout=60,
+            prefer_grpc=False  # This fixes the pydantic validation errors
         )
         embedder = SentenceTransformer('all-MiniLM-L6-v2')
         
@@ -301,3 +303,123 @@ async def search_transcriptions(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Search failed"
         )
+    # Add these debug endpoints to your backend/app/routes/knowledge.py file
+# Add at the end of the file before any existing routes
+
+@router.get("/debug/status")
+async def debug_knowledge_status(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Debug endpoint to check knowledge base status"""
+    try:
+        collection_name = f"user_{current_user.id}_transcriptions"
+        
+        debug_info = {
+            "user_id": str(current_user.id),
+            "collection_name": collection_name,
+            "service_status": {
+                "qdrant_available": knowledge_service.qdrant_available,
+                "embedder_available": knowledge_service.embedder_available,
+                "groq_available": knowledge_service.groq_available
+            }
+        }
+        
+        # Check Qdrant collection
+        if knowledge_service.qdrant_available:
+            try:
+                collection_info = knowledge_service.qdrant_client.get_collection(collection_name)
+                debug_info["qdrant_status"] = {
+                    "collection_exists": True,
+                    "points_count": collection_info.points_count,
+                    "vectors_count": collection_info.vectors_count
+                }
+                
+                # Get a sample of points
+                if collection_info.points_count > 0:
+                    sample_points = knowledge_service.qdrant_client.scroll(
+                        collection_name=collection_name,
+                        limit=3,
+                        with_payload=True
+                    )
+                    debug_info["sample_points"] = [
+                        {
+                            "id": str(point.id),
+                            "payload_keys": list(point.payload.keys()) if point.payload else [],
+                            "title": point.payload.get("title") if point.payload else None,
+                            "content_type": point.payload.get("content_type") if point.payload else None
+                        }
+                        for point in sample_points[0][:3]
+                    ]
+            except Exception as e:
+                debug_info["qdrant_status"] = {
+                    "collection_exists": False,
+                    "error": str(e)
+                }
+        
+        # Check database transcriptions
+        transcriptions_with_kb = db.query(Transcription).filter(
+            Transcription.user_id == current_user.id,
+            Transcription.status == "completed",
+            Transcription.qdrant_point_ids.isnot(None)
+        ).all()
+        
+        debug_info["database_status"] = {
+            "total_completed": db.query(Transcription).filter(
+                Transcription.user_id == current_user.id,
+                Transcription.status == "completed"
+            ).count(),
+            "with_knowledge_base": len(transcriptions_with_kb),
+            "recent_transcriptions": [
+                {
+                    "id": str(t.id),
+                    "title": t.title,
+                    "has_qdrant_points": bool(t.qdrant_point_ids),
+                    "qdrant_collection": t.qdrant_collection,
+                    "created_at": t.created_at.isoformat()
+                }
+                for t in db.query(Transcription).filter(
+                    Transcription.user_id == current_user.id
+                ).order_by(Transcription.created_at.desc()).limit(5).all()
+            ]
+        }
+        
+        return debug_info
+        
+    except Exception as e:
+        logger.error(f"Debug status failed: {e}")
+        return {"error": str(e), "error_type": type(e).__name__}
+
+@router.post("/debug/test-query")
+async def debug_test_query(
+    query: str = "test query",
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Test a simple query to debug issues"""
+    try:
+        logger.info(f"Testing query: {query}")
+        
+        result = await knowledge_service.query_knowledge_base(
+            db=db,
+            user=current_user,
+            query=query,
+            limit=3
+        )
+        
+        return {
+            "test_query": query,
+            "result": result,
+            "debug_info": {
+                "service_available": knowledge_service.qdrant_available,
+                "embedder_available": knowledge_service.embedder_available
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Test query failed: {e}")
+        import traceback
+        return {
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }

@@ -23,15 +23,51 @@ from .file_service import FileService
 
 logger = logging.getLogger(__name__)
 
+# Replace the __init__ method in your TranscriptionService class with this:
+
 class TranscriptionService:
     def __init__(self):
-        # Use direct Groq client for both transcription and chat
-        self.groq_client = Groq(api_key=settings.GROQ_API_KEY)
-        self.qdrant_client = QdrantClient(
-            url=settings.QDRANT_URL,
-            api_key=settings.QDRANT_API_KEY
-        )
-        self.embedder = SentenceTransformer('all-MiniLM-L6-v2')
+        # Fix tokenizers warning
+        os.environ["TOKENIZERS_PARALLELISM"] = "false"
+        
+        # Initialize Groq client
+        try:
+            self.groq_client = Groq(api_key=settings.GROQ_API_KEY)
+            logger.info("✅ Groq client initialized")
+            self.groq_available = True
+        except Exception as e:
+            logger.error(f"❌ Groq initialization failed: {e}")
+            self.groq_client = None
+            self.groq_available = False
+        
+        # Initialize Qdrant client with proper error handling
+        try:
+            self.qdrant_client = QdrantClient(
+                url=settings.QDRANT_URL,
+                api_key=settings.QDRANT_API_KEY,
+                timeout=60,
+                prefer_grpc=False  # This fixes the pydantic validation errors
+            )
+            # Test connection
+            collections = self.qdrant_client.get_collections()
+            logger.info(f"✅ Qdrant connected: {len(collections.collections)} collections")
+            self.qdrant_available = True
+        except Exception as e:
+            logger.error(f"❌ Qdrant initialization failed: {e}")
+            self.qdrant_client = None
+            self.qdrant_available = False
+        
+        # Initialize embedder
+        try:
+            self.embedder = SentenceTransformer('all-MiniLM-L6-v2')
+            logger.info("✅ Embedder initialized")
+            self.embedder_available = True
+        except Exception as e:
+            logger.error(f"❌ Embedder initialization failed: {e}")
+            self.embedder = None
+            self.embedder_available = False
+        
+        # Initialize file service
         self.file_service = FileService()
         
         # Enhanced limits and settings for large video support
@@ -762,31 +798,29 @@ class TranscriptionService:
     async def _store_in_qdrant(
         self, 
         transcription: str, 
-        summary: Optional[str], 
-        user_id: str,
-        transcription_id: str,
-        metadata: Optional[dict] = None
+        summary: str = None,
+        user_id: str = None,
+        transcription_id: str = None, 
+        metadata: Dict = None
     ) -> List[str]:
-        """Store transcription and summary in Qdrant vector database with proper error handling"""
-        point_ids = []
+        """Store transcription and summary in Qdrant vector database"""
+        
+        if not self.qdrant_available or not self.embedder_available:
+            logger.warning("Qdrant or embedder not available, skipping vector storage")
+            return []
         
         try:
             collection_name = f"user_{user_id}_transcriptions"
-            logger.info(f"Attempting to store in Qdrant collection: {collection_name}")
+            point_ids = []
             
-            # Handle collection creation/existence properly
-            collection_exists = False
+            # Check/create collection with better error handling
             try:
                 collection_info = self.qdrant_client.get_collection(collection_name)
                 collection_exists = True
-                logger.info(f"Collection exists with {collection_info.points_count} points")
+                logger.info(f"Collection exists: {collection_name} with {collection_info.points_count} points")
             except Exception as e:
-                if "does not exist" in str(e).lower() or "not found" in str(e).lower():
-                    logger.info(f"Collection does not exist, will create: {collection_name}")
-                    collection_exists = False
-                else:
-                    logger.error(f"Error checking collection existence: {e}")
-                    collection_exists = False
+                logger.error(f"Error checking collection existence: {e}")
+                collection_exists = False
             
             # Create collection if it doesn't exist
             if not collection_exists:
@@ -803,138 +837,81 @@ class TranscriptionService:
                         logger.info(f"Collection already exists (race condition): {collection_name}")
                     else:
                         logger.error(f"Failed to create collection: {create_error}")
-                        raise create_error
-            
-            # Validate inputs
-            if not transcription or not transcription.strip():
-                logger.warning("Empty transcription text, skipping storage")
-                return []
-            
-            # Prepare base metadata
-            base_metadata = {
-                "user_id": user_id,
-                "transcription_id": transcription_id,
-                "created_at": datetime.utcnow().isoformat(),
-                "content_length": len(transcription)
-            }
-            
-            # Add custom metadata if provided
-            if metadata:
-                base_metadata.update(metadata)
+                        return []
             
             # Store transcription
-            try:
-                logger.info("Generating vector for transcription...")
-                transcription_vector = self.embedder.encode(transcription).tolist()
-                logger.info(f"Generated vector of size: {len(transcription_vector)}")
-                
-                if len(transcription_vector) != 384:
-                    raise ValueError(f"Vector size mismatch: expected 384, got {len(transcription_vector)}")
-                
-                transcription_point_id = str(uuid.uuid4())
-                
-                transcription_metadata = {
-                    **base_metadata,
-                    "content_type": "transcription",
-                    "text_preview": transcription[:500],
-                    "full_text": transcription
-                }
-                
-                # Use proper Qdrant point format
-                from qdrant_client.http.models import PointStruct
-                
-                point = PointStruct(
-                    id=transcription_point_id,
-                    vector=transcription_vector,
-                    payload=transcription_metadata
-                )
-                
-                upsert_result = self.qdrant_client.upsert(
-                    collection_name=collection_name,
-                    points=[point]
-                )
-                
-                point_ids.append(transcription_point_id)
-                logger.info(f"Successfully stored transcription point: {transcription_point_id}")
-                logger.info(f"Upsert result: {upsert_result}")
-                
-            except Exception as transcription_error:
-                logger.error(f"Failed to store transcription: {transcription_error}")
-                logger.error(f"Error type: {type(transcription_error).__name__}")
-                # Continue to try storing summary even if transcription fails
-            
-            # Store summary if available
-            if summary and summary.strip() and summary != "Summary generation failed" and "too short" not in summary.lower():
+            if transcription and transcription.strip():
                 try:
-                    logger.info("Generating vector for summary...")
+                    transcription_vector = self.embedder.encode(transcription).tolist()
+                    transcription_point_id = str(uuid.uuid4())
+                    
+                    transcription_metadata = {
+                        "user_id": user_id,
+                        "transcription_id": transcription_id,
+                        "created_at": datetime.utcnow().isoformat(),
+                        "content_type": "transcription",
+                        "text_preview": transcription[:500],
+                        "full_text": transcription,
+                        "content_length": len(transcription)
+                    }
+                    
+                    if metadata:
+                        transcription_metadata.update(metadata)
+                    
+                    self.qdrant_client.upsert(
+                        collection_name=collection_name,
+                        points=[{
+                            "id": transcription_point_id,
+                            "vector": transcription_vector,
+                            "payload": transcription_metadata
+                        }]
+                    )
+                    
+                    point_ids.append(transcription_point_id)
+                    logger.info(f"Stored transcription vector: {transcription_point_id}")
+                    
+                except Exception as e:
+                    logger.error(f"Failed to store transcription: {e}")
+            
+            # Store summary if provided
+            if summary and summary.strip():
+                try:
                     summary_vector = self.embedder.encode(summary).tolist()
-                    logger.info(f"Generated summary vector of size: {len(summary_vector)}")
-                    
-                    if len(summary_vector) != 384:
-                        raise ValueError(f"Summary vector size mismatch: expected 384, got {len(summary_vector)}")
-                    
                     summary_point_id = str(uuid.uuid4())
                     
                     summary_metadata = {
-                        **base_metadata,
+                        "user_id": user_id,
+                        "transcription_id": transcription_id,
+                        "created_at": datetime.utcnow().isoformat(),
                         "content_type": "summary",
                         "text_preview": summary[:500],
-                        "full_text": summary
+                        "full_text": summary,
+                        "content_length": len(summary)
                     }
                     
-                    point = PointStruct(
-                        id=summary_point_id,
-                        vector=summary_vector,
-                        payload=summary_metadata
-                    )
+                    if metadata:
+                        summary_metadata.update(metadata)
                     
-                    upsert_result = self.qdrant_client.upsert(
+                    self.qdrant_client.upsert(
                         collection_name=collection_name,
-                        points=[point]
+                        points=[{
+                            "id": summary_point_id,
+                            "vector": summary_vector,
+                            "payload": summary_metadata
+                        }]
                     )
                     
                     point_ids.append(summary_point_id)
-                    logger.info(f"Successfully stored summary point: {summary_point_id}")
-                    logger.info(f"Summary upsert result: {upsert_result}")
+                    logger.info(f"Stored summary vector: {summary_point_id}")
                     
-                except Exception as summary_error:
-                    logger.error(f"Failed to store summary: {summary_error}")
-                    logger.error(f"Summary error type: {type(summary_error).__name__}")
-            else:
-                logger.info("Skipping summary storage (empty, failed, or too short)")
+                except Exception as e:
+                    logger.error(f"Failed to store summary: {e}")
             
-            # Verify storage by checking collection count
-            try:
-                collection_info = self.qdrant_client.get_collection(collection_name)
-                logger.info(f"Collection now has {collection_info.points_count} total points")
-                
-                # Also try a quick search to verify the points are actually accessible
-                if point_ids:
-                    test_vector = self.embedder.encode("test query").tolist()
-                    search_result = self.qdrant_client.search(
-                        collection_name=collection_name,
-                        query_vector=test_vector,
-                        limit=1
-                    )
-                    logger.info(f"Verification search returned {len(search_result)} results")
-                
-            except Exception as verify_error:
-                logger.warning(f"Could not verify collection status: {verify_error}")
-            
-            if point_ids:
-                logger.info(f"✅ Successfully stored {len(point_ids)} points in Qdrant for user {user_id}")
-            else:
-                logger.warning(f"⚠️ No points were stored for user {user_id}")
-            
+            logger.info(f"Successfully stored {len(point_ids)} vectors in Qdrant")
             return point_ids
             
         except Exception as e:
-            logger.error(f"❌ Critical error in Qdrant storage: {e}")
-            logger.error(f"Error type: {type(e).__name__}")
-            logger.error(f"Error details: {str(e)}")
-            import traceback
-            logger.error(f"Traceback: {traceback.format_exc()}")
-            # Return empty list but don't raise exception to avoid breaking the transcription
+            logger.error(f"Failed to store in Qdrant: {e}")
             return []
     
     async def delete_from_qdrant(self, user_id: str, point_ids: List[str]) -> bool:

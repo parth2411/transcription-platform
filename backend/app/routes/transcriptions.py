@@ -1196,7 +1196,9 @@ async def debug_qdrant_status(
         # Test basic connection
         client = QdrantClient(
             url=settings.QDRANT_URL,
-            api_key=settings.QDRANT_API_KEY
+            api_key=settings.QDRANT_API_KEY,
+            timeout=60,
+            prefer_grpc=False  # This fixes the pydantic validation errors
         )
         
         collection_name = f"user_{current_user.id}_transcriptions"
@@ -1302,7 +1304,12 @@ async def test_qdrant_storage(
                 from qdrant_client import QdrantClient
                 from sentence_transformers import SentenceTransformer
                 
-                client = QdrantClient(url=settings.QDRANT_URL, api_key=settings.QDRANT_API_KEY)
+                client = QdrantClient(
+            url=settings.QDRANT_URL,
+            api_key=settings.QDRANT_API_KEY,
+            timeout=60,
+            prefer_grpc=False
+        )
                 embedder = SentenceTransformer('all-MiniLM-L6-v2')
                 
                 collection_name = f"user_{current_user.id}_transcriptions"
@@ -1421,9 +1428,10 @@ async def get_collection_statistics(
         
         client = QdrantClient(
             url=settings.QDRANT_URL,
-            api_key=settings.QDRANT_API_KEY
+            api_key=settings.QDRANT_API_KEY,
+            timeout=60,
+            prefer_grpc=False  # This fixes the pydantic validation errors
         )
-        
         collection_name = f"user_{current_user.id}_transcriptions"
         
         try:
