@@ -7,6 +7,7 @@ from groq import Groq
 from sqlalchemy.orm import Session
 from datetime import datetime
 import logging
+from sqlalchemy import func
 
 from ..config import settings
 from ..models import KnowledgeQuery, User, Transcription
@@ -29,9 +30,7 @@ class KnowledgeService:
         query: str, 
         limit: int = 5
     ) -> Dict:
-        """
-        Query the user's knowledge base and return contextual answer
-        """
+        """Query the user's knowledge base and return contextual answer"""
         try:
             start_time = time.time()
             collection_name = f"user_{user.id}_transcriptions"
@@ -41,15 +40,15 @@ class KnowledgeService:
                 collection_info = self.qdrant_client.get_collection(collection_name)
                 if collection_info.points_count == 0:
                     return {
-                        "answer": "No transcriptions found in your knowledge base. Please upload and process some audio files first.",
+                        "answer": "No transcriptions found in your knowledge base. Please upload and process some audio files with 'Add to Knowledge Base' enabled.",
                         "sources": [],
                         "confidence": 0.0,
                         "query_id": ""
                     }
             except Exception as e:
-                logger.warning(f"Collection not found: {e}")
+                logger.warning(f"Collection not found or error: {e}")
                 return {
-                    "answer": "No knowledge base found. Please upload and process some audio files first.",
+                    "answer": "No knowledge base found. Please upload and process some audio files with 'Add to Knowledge Base' enabled.",
                     "sources": [],
                     "confidence": 0.0,
                     "query_id": ""
@@ -63,105 +62,98 @@ class KnowledgeService:
                 collection_name=collection_name,
                 query_vector=query_vector,
                 limit=limit,
-                score_threshold=0.5  # Lower threshold for better results
+                score_threshold=0.3  # Lower threshold for better results
             )
             
             if not search_results:
                 return {
-                    "answer": "I couldn't find relevant information in your transcriptions for this query. Try asking about topics from your uploaded content.",
+                    "answer": "I couldn't find relevant information in your transcriptions for this query. Try asking about topics from your uploaded content or check if your transcriptions are being stored in the knowledge base.",
                     "sources": [],
                     "confidence": 0.0,
                     "query_id": ""
                 }
             
-            # Build context from search results
+            # Prepare context for LLM
             context_parts = []
-            source_transcriptions = []
+            sources = []
             
             for result in search_results:
-                context_parts.append(f"Content: {result.payload['text']}")
-                
-                # Get source transcription info
-                transcription_id = result.payload.get('transcription_id')
-                if transcription_id:
-                    try:
-                        from sqlalchemy import text
-                        # Use raw SQL to avoid the func issue
-                        query_sql = text("""
-                            SELECT id, title, created_at 
-                            FROM transcriptions 
-                            WHERE id = :transcription_id AND user_id = :user_id
-                        """)
-                        
-                        result_row = db.execute(query_sql, {
-                            "transcription_id": transcription_id,
-                            "user_id": str(user.id)
-                        }).first()
-                        
-                        if result_row:
-                            source_transcriptions.append({
-                                "id": str(result_row[0]),
-                                "title": result_row[1],
-                                "date": result_row[2].strftime("%Y-%m-%d"),
-                                "confidence": result.score,
-                                "type": result.payload.get('type', 'transcription')
-                            })
-                            
-                    except Exception as e:
-                        logger.error(f"Error fetching transcription info: {e}")
-                        # Fallback with basic info
-                        source_transcriptions.append({
-                            "id": transcription_id,
-                            "title": "Unknown transcription",
-                            "date": "Unknown",
-                            "confidence": result.score,
-                            "type": result.payload.get('type', 'transcription')
-                        })
+                payload = result.payload
+                if payload and payload.get("full_text"):
+                    context_parts.append(payload["full_text"])
+                    sources.append({
+                        "title": payload.get("title", "Untitled"),
+                        "content_type": payload.get("content_type", "unknown"),
+                        "confidence": float(result.score),
+                        "created_at": payload.get("created_at", "")
+                    })
             
+            if not context_parts:
+                return {
+                    "answer": "Found relevant transcriptions but could not extract content. This might be a data storage issue.",
+                    "sources": sources,
+                    "confidence": 0.0,
+                    "query_id": ""
+                }
+            
+            # Generate contextual answer using Groq
             context = "\n\n".join(context_parts)
             
-            # Generate answer using Groq
-            answer = await self._generate_contextual_answer(query, context)
+            prompt = f"""
+            Based on the following transcriptions from the user's knowledge base, answer their question accurately and helpfully.
             
-            # Calculate average confidence
-            avg_confidence = sum(r.score for r in search_results) / len(search_results)
+            User's Question: {query}
             
-            # Save query to database
-            response_time = int((time.time() - start_time) * 1000)
+            Relevant Transcriptions:
+            {context}
             
+            Please provide a comprehensive answer based on the content above. If the transcriptions don't contain enough information to fully answer the question, say so and suggest what additional information might be needed.
+            """
+            
+            response = self.groq_client.chat.completions.create(
+                model="llama3-70b-8192",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=1000,
+                temperature=0.3
+            )
+            
+            answer = response.choices[0].message.content
+            query_id = str(uuid.uuid4())
+            
+            # Save query to history
             try:
                 knowledge_query = KnowledgeQuery(
                     user_id=user.id,
                     query_text=query,
                     response_text=answer,
-                    transcription_ids=[s["id"] for s in source_transcriptions],
-                    confidence_score=avg_confidence,
-                    response_time_ms=response_time
+                    confidence_score=max([s["confidence"] for s in sources]) if sources else 0.0,
+                    sources_count=len(sources),
+                    processing_time_ms=int((time.time() - start_time) * 1000)
                 )
                 db.add(knowledge_query)
                 db.commit()
                 query_id = str(knowledge_query.id)
-            except Exception as e:
-                logger.error(f"Failed to save query: {e}")
-                query_id = ""
+            except Exception as save_error:
+                logger.warning(f"Could not save query to history: {save_error}")
             
             return {
                 "answer": answer,
-                "sources": source_transcriptions,
-                "confidence": avg_confidence,
-                "query_id": query_id
+                "sources": sources,
+                "confidence": max([s["confidence"] for s in sources]) if sources else 0.0,
+                "query_id": query_id,
+                "processing_time_ms": int((time.time() - start_time) * 1000)
             }
             
         except Exception as e:
             logger.error(f"Knowledge base query failed: {e}")
             return {
-                "answer": f"I encountered an error while searching your knowledge base: {str(e)}. Please try again or contact support.",
+                "answer": f"Sorry, there was an error processing your query: {str(e)}",
                 "sources": [],
                 "confidence": 0.0,
-                "query_id": ""
+                "query_id": "",
+                "error": str(e)
             }
-
-    
+        
     async def _generate_contextual_answer(self, query: str, context: str) -> str:
         """Generate answer using Groq with context"""
         try:
@@ -279,7 +271,7 @@ Answer:"""
             return False
     
     async def get_knowledge_base_stats(self, db: Session, user: User) -> Dict:
-        """Get statistics about user's knowledge base"""
+        """Get statistics about user's knowledge base with proper SQLAlchemy"""
         try:
             collection_name = f"user_{user.id}_transcriptions"
             
@@ -287,10 +279,12 @@ Answer:"""
             try:
                 collection_info = self.qdrant_client.get_collection(collection_name)
                 vector_count = collection_info.points_count
-            except:
+                logger.info(f"Qdrant collection {collection_name} has {vector_count} points")
+            except Exception as e:
+                logger.warning(f"Could not get Qdrant stats: {e}")
                 vector_count = 0
             
-            # Get database stats
+            # Get database stats - Fixed SQLAlchemy usage
             transcription_count = db.query(Transcription).filter(
                 Transcription.user_id == user.id,
                 Transcription.status == "completed"
@@ -300,28 +294,50 @@ Answer:"""
                 KnowledgeQuery.user_id == user.id
             ).count()
             
-            # Get total duration
+            # Get total duration - Fixed func usage
             total_duration = db.query(
-                db.func.sum(Transcription.duration_seconds)
+                func.sum(Transcription.duration_seconds)  # ✅ Use func.sum instead of db.func.sum
             ).filter(
                 Transcription.user_id == user.id,
                 Transcription.status == "completed"
             ).scalar() or 0
             
+            # Count transcriptions with knowledge base storage
+            kb_stored_count = db.query(Transcription).filter(
+                Transcription.user_id == user.id,
+                Transcription.status == "completed",
+                Transcription.qdrant_point_ids.isnot(None)
+            ).count()
+            
+            logger.info(f"Knowledge base stats for user {user.id}:")
+            logger.info(f"  - Total completed transcriptions: {transcription_count}")
+            logger.info(f"  - Transcriptions in knowledge base: {kb_stored_count}")
+            logger.info(f"  - Vector points in Qdrant: {vector_count}")
+            logger.info(f"  - Total queries made: {query_count}")
+            
             return {
                 "transcription_count": transcription_count,
+                "kb_stored_count": kb_stored_count,
                 "vector_count": vector_count,
                 "query_count": query_count,
-                "total_duration_hours": round(total_duration / 3600, 2),
-                "collection_name": collection_name
+                "total_duration_hours": round(total_duration / 3600, 2) if total_duration else 0,
+                "collection_name": collection_name,
+                "storage_rate": round((kb_stored_count / transcription_count * 100), 1) if transcription_count > 0 else 0
             }
             
         except Exception as e:
             logger.error(f"Failed to get knowledge base stats: {e}")
+            logger.error(f"Error type: {type(e).__name__}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            
             return {
                 "transcription_count": 0,
+                "kb_stored_count": 0,
                 "vector_count": 0,
                 "query_count": 0,
                 "total_duration_hours": 0,
-                "collection_name": f"user_{user.id}_transcriptions"
+                "collection_name": collection_name,
+                "storage_rate": 0,
+                "error": str(e)
             }

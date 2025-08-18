@@ -158,139 +158,6 @@ async def process_transcription_background(
     finally:
         if db:
             db.close()
-# Add these debug routes to your routes/transcriptions.py
-
-@router.get("/debug/qdrant")
-async def debug_qdrant_status(
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Debug endpoint to check Qdrant connection and status"""
-    try:
-        debug_info = await transcription_service.debug_qdrant_connection(str(current_user.id))
-        return debug_info
-    except Exception as e:
-        logger.error(f"Debug endpoint failed: {e}")
-        return {"error": str(e)}
-
-@router.post("/debug/test-storage")
-async def test_qdrant_storage(
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Test storing a sample document in Qdrant"""
-    try:
-        result = await transcription_service.test_qdrant_storage(str(current_user.id))
-        return result
-    except Exception as e:
-        logger.error(f"Test storage endpoint failed: {e}")
-        return {"error": str(e)}
-
-@router.post("/debug/manual-store/{transcription_id}")
-async def manual_store_transcription(
-    transcription_id: str,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Manually store an existing transcription in Qdrant"""
-    try:
-        # Get the transcription
-        transcription = db.query(Transcription).filter(
-            Transcription.id == transcription_id,
-            Transcription.user_id == current_user.id,
-            Transcription.status == "completed"
-        ).first()
-        
-        if not transcription:
-            raise HTTPException(
-                status_code=404, 
-                detail="Completed transcription not found"
-            )
-        
-        if not transcription.transcription_text:
-            raise HTTPException(
-                status_code=400,
-                detail="Transcription has no text content"
-            )
-        
-        # Manually store in Qdrant
-        result = await transcription_service.manual_store_transcription(
-            user_id=str(current_user.id),
-            transcription_id=str(transcription.id),
-            transcription_text=transcription.transcription_text,
-            summary_text=transcription.summary_text
-        )
-        
-        if result["status"] == "success":
-            # Update the transcription record
-            transcription.qdrant_point_ids = result["point_ids"]
-            transcription.qdrant_collection = f"user_{current_user.id}_transcriptions"
-            db.commit()
-        
-        return result
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Manual store endpoint failed: {e}")
-        return {"error": str(e)}
-
-@router.get("/debug/collection-stats")
-async def get_collection_statistics(
-    current_user: User = Depends(get_current_user)
-):
-    """Get detailed statistics about the user's Qdrant collection"""
-    try:
-        from qdrant_client import QdrantClient
-        from ..config import settings
-        
-        client = QdrantClient(
-            url=settings.QDRANT_URL,
-            api_key=settings.QDRANT_API_KEY
-        )
-        
-        collection_name = f"user_{current_user.id}_transcriptions"
-        
-        try:
-            # Get collection info
-            collection_info = client.get_collection(collection_name)
-            
-            # Get some sample points
-            sample_points = client.scroll(
-                collection_name=collection_name,
-                limit=5,
-                with_payload=True,
-                with_vectors=False
-            )
-            
-            return {
-                "collection_exists": True,
-                "collection_name": collection_name,
-                "points_count": collection_info.points_count,
-                "vectors_count": collection_info.vectors_count,
-                "segments_count": collection_info.segments_count,
-                "status": collection_info.status,
-                "sample_points": [
-                    {
-                        "id": str(point.id),
-                        "payload_keys": list(point.payload.keys()) if point.payload else [],
-                        "content_type": point.payload.get("content_type") if point.payload else None,
-                        "title": point.payload.get("title") if point.payload else None
-                    }
-                    for point in sample_points[0]
-                ]
-            }
-            
-        except Exception as e:
-            return {
-                "collection_exists": False,
-                "collection_name": collection_name,
-                "error": str(e)
-            }
-        
-    except Exception as e:
-        logger.error(f"Collection stats endpoint failed: {e}")
-        return {"error": str(e)}
 @router.post("/upload", response_model=TranscriptionResponse, status_code=status.HTTP_201_CREATED)
 async def upload_file_transcription(
     background_tasks: BackgroundTasks,
@@ -1312,3 +1179,415 @@ def _bulk_export_zip(transcriptions: List[Transcription], content_type: str) -> 
         media_type="application/zip",
         headers={"Content-Disposition": f"attachment; filename=bulk_export_{content_type}.zip"}
     )
+# Add these debug routes to your existing routes/transcriptions.py file
+# Insert these at the end of the file, before any existing routes
+
+@router.get("/debug/qdrant")
+async def debug_qdrant_status(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Debug endpoint to check Qdrant connection and status"""
+    try:
+        from qdrant_client import QdrantClient
+        from sentence_transformers import SentenceTransformer
+        
+        # Test basic connection
+        client = QdrantClient(
+            url=settings.QDRANT_URL,
+            api_key=settings.QDRANT_API_KEY
+        )
+        
+        collection_name = f"user_{current_user.id}_transcriptions"
+        
+        debug_info = {
+            "connection_status": "connected",
+            "qdrant_url": settings.QDRANT_URL,
+            "target_collection": collection_name,
+            "user_id": str(current_user.id)
+        }
+        
+        # Test collections list
+        try:
+            collections = client.get_collections()
+            debug_info["total_collections"] = len(collections.collections)
+            debug_info["all_collections"] = [c.name for c in collections.collections]
+        except Exception as e:
+            debug_info["collections_error"] = str(e)
+        
+        # Check target collection
+        try:
+            collection_info = client.get_collection(collection_name)
+            debug_info["collection_exists"] = True
+            debug_info["points_count"] = collection_info.points_count
+            debug_info["vectors_count"] = collection_info.vectors_count
+            debug_info["collection_status"] = collection_info.status
+        except Exception as e:
+            debug_info["collection_exists"] = False
+            debug_info["collection_error"] = str(e)
+        
+        # Test embedder
+        try:
+            embedder = SentenceTransformer('all-MiniLM-L6-v2')
+            test_vector = embedder.encode("test sentence").tolist()
+            debug_info["embedder_test"] = {
+                "status": "working",
+                "vector_size": len(test_vector),
+                "sample_values": test_vector[:5]
+            }
+        except Exception as e:
+            debug_info["embedder_test"] = {
+                "status": "failed",
+                "error": str(e)
+            }
+        
+        # Check database transcriptions
+        completed_transcriptions = db.query(Transcription).filter(
+            Transcription.user_id == current_user.id,
+            Transcription.status == "completed"
+        ).count()
+        
+        kb_transcriptions = db.query(Transcription).filter(
+            Transcription.user_id == current_user.id,
+            Transcription.status == "completed",
+            Transcription.qdrant_point_ids.isnot(None)
+        ).count()
+        
+        debug_info["database_stats"] = {
+            "completed_transcriptions": completed_transcriptions,
+            "kb_stored_transcriptions": kb_transcriptions,
+            "storage_rate": f"{(kb_transcriptions/completed_transcriptions*100):.1f}%" if completed_transcriptions > 0 else "0%"
+        }
+        
+        return debug_info
+        
+    except Exception as e:
+        logger.error(f"Debug endpoint failed: {e}")
+        return {
+            "connection_status": "failed",
+            "error": str(e),
+            "error_type": type(e).__name__
+        }
+
+@router.post("/debug/test-storage")
+async def test_qdrant_storage(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Test storing a sample document in Qdrant"""
+    try:
+        test_text = "This is a test transcription for debugging knowledge base storage. It contains sample content to verify that the vector embedding and storage system is working correctly."
+        test_summary = "Test summary: This debug test verifies that Qdrant storage is functioning properly with vector embeddings."
+        
+        logger.info("Starting Qdrant storage test...")
+        
+        point_ids = await transcription_service._store_in_qdrant(
+            transcription=test_text,
+            summary=test_summary,
+            user_id=str(current_user.id),
+            transcription_id="debug-test-transcription",
+            metadata={
+                "title": "Debug Test Transcription",
+                "type": "debug_test",
+                "created_at": datetime.utcnow().isoformat(),
+                "test_mode": True
+            }
+        )
+        
+        # Verify storage with a search test
+        verification_result = None
+        if point_ids:
+            try:
+                from qdrant_client import QdrantClient
+                from sentence_transformers import SentenceTransformer
+                
+                client = QdrantClient(url=settings.QDRANT_URL, api_key=settings.QDRANT_API_KEY)
+                embedder = SentenceTransformer('all-MiniLM-L6-v2')
+                
+                collection_name = f"user_{current_user.id}_transcriptions"
+                test_query_vector = embedder.encode("test debug transcription").tolist()
+                
+                search_results = client.search(
+                    collection_name=collection_name,
+                    query_vector=test_query_vector,
+                    limit=3
+                )
+                
+                verification_result = {
+                    "search_test": "success",
+                    "results_found": len(search_results),
+                    "top_result_score": search_results[0].score if search_results else 0
+                }
+                
+            except Exception as search_error:
+                verification_result = {
+                    "search_test": "failed",
+                    "error": str(search_error)
+                }
+        
+        return {
+            "test_status": "success",
+            "points_stored": len(point_ids),
+            "point_ids": point_ids,
+            "verification": verification_result,
+            "message": "Test storage completed successfully"
+        }
+        
+    except Exception as e:
+        logger.error(f"Test storage failed: {e}")
+        return {
+            "test_status": "failed",
+            "error": str(e),
+            "error_type": type(e).__name__
+        }
+
+@router.post("/debug/manual-store/{transcription_id}")
+async def manual_store_transcription(
+    transcription_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Manually store an existing transcription in Qdrant"""
+    try:
+        # Get the transcription
+        transcription = db.query(Transcription).filter(
+            Transcription.id == transcription_id,
+            Transcription.user_id == current_user.id,
+            Transcription.status == "completed"
+        ).first()
+        
+        if not transcription:
+            raise HTTPException(
+                status_code=404, 
+                detail="Completed transcription not found"
+            )
+        
+        if not transcription.transcription_text:
+            raise HTTPException(
+                status_code=400,
+                detail="Transcription has no text content"
+            )
+        
+        logger.info(f"Manually storing transcription {transcription_id}")
+        
+        # Store in Qdrant
+        point_ids = await transcription_service._store_in_qdrant(
+            transcription=transcription.transcription_text,
+            summary=transcription.summary_text,
+            user_id=str(current_user.id),
+            transcription_id=str(transcription.id),
+            metadata={
+                "title": transcription.title,
+                "created_at": transcription.created_at.isoformat(),
+                "type": transcription.file_type or "manual_storage",
+                "manual_storage": True
+            }
+        )
+        
+        result = {
+            "status": "success" if point_ids else "failed",
+            "points_stored": len(point_ids),
+            "point_ids": point_ids,
+            "transcription_title": transcription.title
+        }
+        
+        if point_ids:
+            # Update the transcription record
+            transcription.qdrant_point_ids = point_ids
+            transcription.qdrant_collection = f"user_{current_user.id}_transcriptions"
+            db.commit()
+            result["database_updated"] = True
+        
+        return result
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Manual store endpoint failed: {e}")
+        return {
+            "status": "failed",
+            "error": str(e),
+            "error_type": type(e).__name__
+        }
+
+@router.get("/debug/collection-stats")
+async def get_collection_statistics(
+    current_user: User = Depends(get_current_user)
+):
+    """Get detailed statistics about the user's Qdrant collection"""
+    try:
+        from qdrant_client import QdrantClient
+        
+        client = QdrantClient(
+            url=settings.QDRANT_URL,
+            api_key=settings.QDRANT_API_KEY
+        )
+        
+        collection_name = f"user_{current_user.id}_transcriptions"
+        
+        try:
+            # Get collection info
+            collection_info = client.get_collection(collection_name)
+            
+            # Get some sample points
+            sample_points = client.scroll(
+                collection_name=collection_name,
+                limit=5,
+                with_payload=True,
+                with_vectors=False
+            )
+            
+            # Get points by content type
+            transcription_points = client.scroll(
+                collection_name=collection_name,
+                scroll_filter={
+                    "must": [
+                        {
+                            "key": "content_type",
+                            "match": {"value": "transcription"}
+                        }
+                    ]
+                },
+                limit=1000,
+                with_payload=False
+            )
+            
+            summary_points = client.scroll(
+                collection_name=collection_name,
+                scroll_filter={
+                    "must": [
+                        {
+                            "key": "content_type", 
+                            "match": {"value": "summary"}
+                        }
+                    ]
+                },
+                limit=1000,
+                with_payload=False
+            )
+            
+            return {
+                "collection_exists": True,
+                "collection_name": collection_name,
+                "points_count": collection_info.points_count,
+                "vectors_count": collection_info.vectors_count,
+                "segments_count": collection_info.segments_count,
+                "status": collection_info.status,
+                "transcription_points": len(transcription_points[0]),
+                "summary_points": len(summary_points[0]),
+                "sample_points": [
+                    {
+                        "id": str(point.id),
+                        "payload_keys": list(point.payload.keys()) if point.payload else [],
+                        "content_type": point.payload.get("content_type") if point.payload else None,
+                        "title": point.payload.get("title") if point.payload else None,
+                        "text_preview": point.payload.get("text_preview", "")[:100] if point.payload else ""
+                    }
+                    for point in sample_points[0][:5]
+                ]
+            }
+            
+        except Exception as e:
+            return {
+                "collection_exists": False,
+                "collection_name": collection_name,
+                "error": str(e),
+                "error_type": type(e).__name__
+            }
+        
+    except Exception as e:
+        logger.error(f"Collection stats endpoint failed: {e}")
+        return {"error": str(e)}
+
+@router.post("/debug/fix-existing")
+async def fix_existing_transcriptions(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Fix existing transcriptions that weren't stored in knowledge base"""
+    try:
+        # Find completed transcriptions without knowledge base storage
+        missing_kb_transcriptions = db.query(Transcription).filter(
+            Transcription.user_id == current_user.id,
+            Transcription.status == "completed",
+            Transcription.transcription_text.isnot(None),
+            Transcription.qdrant_point_ids.is_(None)
+        ).all()
+        
+        if not missing_kb_transcriptions:
+            return {
+                "status": "no_work_needed",
+                "message": "All completed transcriptions are already in knowledge base",
+                "processed": 0
+            }
+        
+        results = {
+            "status": "processing",
+            "total_found": len(missing_kb_transcriptions),
+            "processed": 0,
+            "successful": 0,
+            "failed": 0,
+            "details": []
+        }
+        
+        for transcription in missing_kb_transcriptions:
+            try:
+                logger.info(f"Processing transcription {transcription.id}: {transcription.title}")
+                
+                point_ids = await transcription_service._store_in_qdrant(
+                    transcription=transcription.transcription_text,
+                    summary=transcription.summary_text,
+                    user_id=str(current_user.id),
+                    transcription_id=str(transcription.id),
+                    metadata={
+                        "title": transcription.title,
+                        "created_at": transcription.created_at.isoformat(),
+                        "type": transcription.file_type or "retroactive_storage",
+                        "retroactive_fix": True
+                    }
+                )
+                
+                if point_ids:
+                    # Update the transcription record
+                    transcription.qdrant_point_ids = point_ids
+                    transcription.qdrant_collection = f"user_{current_user.id}_transcriptions"
+                    db.commit()
+                    
+                    results["successful"] += 1
+                    results["details"].append({
+                        "id": str(transcription.id),
+                        "title": transcription.title,
+                        "status": "success",
+                        "points_stored": len(point_ids)
+                    })
+                else:
+                    results["failed"] += 1
+                    results["details"].append({
+                        "id": str(transcription.id), 
+                        "title": transcription.title,
+                        "status": "failed",
+                        "error": "No points returned from storage"
+                    })
+                
+                results["processed"] += 1
+                
+            except Exception as e:
+                results["failed"] += 1
+                results["details"].append({
+                    "id": str(transcription.id),
+                    "title": transcription.title, 
+                    "status": "failed",
+                    "error": str(e)
+                })
+                logger.error(f"Failed to process transcription {transcription.id}: {e}")
+        
+        results["status"] = "completed"
+        return results
+        
+    except Exception as e:
+        logger.error(f"Fix existing transcriptions failed: {e}")
+        return {
+            "status": "failed",
+            "error": str(e),
+            "error_type": type(e).__name__
+        }

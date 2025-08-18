@@ -492,7 +492,104 @@ class TranscriptionService:
         except Exception as e:
             logger.error(f"Aggressive compression error: {e}")
             return audio_path
+    # Fixed real-time transcription handling
 
+    async def _convert_to_wav_safe(self, input_path: str, output_path: str = None):
+        """Safe audio conversion with better WebM handling"""
+        try:
+            if output_path is None:
+                output_path = input_path.replace(os.path.splitext(input_path)[1], '.wav')
+            
+            # First, try to probe the file to see if it's valid
+            probe_cmd = [
+                "ffprobe", "-v", "quiet", "-show_format", "-show_streams", 
+                "-print_format", "json", input_path
+            ]
+            
+            probe_result = subprocess.run(probe_cmd, capture_output=True, text=True, timeout=10)
+            
+            if probe_result.returncode != 0:
+                # File is corrupted or invalid
+                logger.error(f"Invalid audio file detected: {input_path}")
+                logger.error(f"FFprobe error: {probe_result.stderr}")
+                raise RuntimeError("Invalid or corrupted audio file")
+            
+            # Try to parse the probe result
+            try:
+                probe_data = json.loads(probe_result.stdout)
+                if not probe_data.get('streams'):
+                    raise RuntimeError("No audio streams found in file")
+            except json.JSONDecodeError:
+                logger.warning("Could not parse probe data, continuing with conversion attempt")
+            
+            # Enhanced conversion command with error recovery
+            cmd = [
+                "ffmpeg", "-y", 
+                "-i", input_path,
+                "-vn",  # No video
+                "-ar", "16000",  # 16kHz sample rate
+                "-ac", "1",      # Mono
+                "-c:a", "pcm_s16le",  # PCM format
+                "-f", "wav",     # Force WAV format
+                "-avoid_negative_ts", "make_zero",  # Handle timing issues
+                "-fflags", "+genpts",  # Generate presentation timestamps
+                output_path
+            ]
+            
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            
+            if result.returncode != 0:
+                logger.error(f"Audio conversion failed: {result.stderr}")
+                raise RuntimeError(f"Audio conversion failed: {result.stderr}")
+            
+            # Verify the output file exists and has content
+            if not os.path.exists(output_path):
+                raise RuntimeError("Conversion completed but output file not found")
+            
+            file_size = os.path.getsize(output_path)
+            if file_size < 1000:  # Less than 1KB indicates likely empty/corrupt file
+                raise RuntimeError(f"Output file too small ({file_size} bytes), likely corrupted")
+            
+            logger.info(f"Successfully converted audio: {file_size} bytes")
+            return output_path
+            
+        except subprocess.TimeoutExpired:
+            raise RuntimeError("Audio conversion timeout - file may be corrupted")
+        except Exception as e:
+            logger.error(f"Audio conversion error: {e}")
+            raise RuntimeError(f"Audio conversion failed: {str(e)}")
+
+    # Add this method to handle real-time audio better
+    async def _handle_realtime_audio(self, audio_data: bytes, temp_dir: str) -> str:
+        """Handle real-time audio data with validation"""
+        try:
+            # Save the audio data
+            temp_path = os.path.join(temp_dir, f"realtime_audio_{int(time.time())}.webm")
+            
+            with open(temp_path, 'wb') as f:
+                f.write(audio_data)
+            
+            # Check file size
+            file_size = os.path.getsize(temp_path)
+            logger.info(f"Received audio file: {file_size} bytes")
+            
+            if file_size < 1000:  # Less than 1KB
+                raise RuntimeError(f"Audio file too small ({file_size} bytes), likely empty or corrupted")
+            
+            # Try to convert to WAV
+            wav_path = os.path.join(temp_dir, f"converted_audio_{int(time.time())}.wav")
+            converted_path = await self._convert_to_wav_safe(temp_path, wav_path)
+            
+            # Clean up original
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+            
+            return converted_path
+            
+        except Exception as e:
+            logger.error(f"Real-time audio handling failed: {e}")
+            raise RuntimeError(f"Real-time audio processing failed: {str(e)}")
+    
     async def _convert_to_wav_detailed(self, input_path: str, output_path: str):
         """Convert audio with detailed error handling"""
         try:
@@ -660,6 +757,8 @@ class TranscriptionService:
             logger.error(f"Failed to get audio duration: {e}")
             return 0
     
+    # Fixed _store_in_qdrant method with proper collection handling
+
     async def _store_in_qdrant(
         self, 
         transcription: str, 
@@ -668,28 +767,43 @@ class TranscriptionService:
         transcription_id: str,
         metadata: Optional[dict] = None
     ) -> List[str]:
-        """Store transcription and summary in Qdrant vector database with enhanced error handling"""
+        """Store transcription and summary in Qdrant vector database with proper error handling"""
         point_ids = []
         
         try:
             collection_name = f"user_{user_id}_transcriptions"
-            logger.info(f"Storing in Qdrant collection: {collection_name}")
+            logger.info(f"Attempting to store in Qdrant collection: {collection_name}")
             
-            # Ensure collection exists with proper configuration
+            # Handle collection creation/existence properly
+            collection_exists = False
             try:
                 collection_info = self.qdrant_client.get_collection(collection_name)
+                collection_exists = True
                 logger.info(f"Collection exists with {collection_info.points_count} points")
-            except Exception as collection_error:
-                logger.info(f"Creating new collection: {collection_name}")
-                
-                # Use updated Qdrant configuration format
-                from qdrant_client.http.models import VectorParams, Distance
-                
-                self.qdrant_client.create_collection(
-                    collection_name=collection_name,
-                    vectors_config=VectorParams(size=384, distance=Distance.COSINE)
-                )
-                logger.info(f"Successfully created Qdrant collection: {collection_name}")
+            except Exception as e:
+                if "does not exist" in str(e).lower() or "not found" in str(e).lower():
+                    logger.info(f"Collection does not exist, will create: {collection_name}")
+                    collection_exists = False
+                else:
+                    logger.error(f"Error checking collection existence: {e}")
+                    collection_exists = False
+            
+            # Create collection if it doesn't exist
+            if not collection_exists:
+                try:
+                    from qdrant_client.http.models import VectorParams, Distance
+                    
+                    self.qdrant_client.create_collection(
+                        collection_name=collection_name,
+                        vectors_config=VectorParams(size=384, distance=Distance.COSINE)
+                    )
+                    logger.info(f"Successfully created Qdrant collection: {collection_name}")
+                except Exception as create_error:
+                    if "already exists" in str(create_error).lower():
+                        logger.info(f"Collection already exists (race condition): {collection_name}")
+                    else:
+                        logger.error(f"Failed to create collection: {create_error}")
+                        raise create_error
             
             # Validate inputs
             if not transcription or not transcription.strip():
@@ -714,13 +828,16 @@ class TranscriptionService:
                 transcription_vector = self.embedder.encode(transcription).tolist()
                 logger.info(f"Generated vector of size: {len(transcription_vector)}")
                 
+                if len(transcription_vector) != 384:
+                    raise ValueError(f"Vector size mismatch: expected 384, got {len(transcription_vector)}")
+                
                 transcription_point_id = str(uuid.uuid4())
                 
                 transcription_metadata = {
                     **base_metadata,
                     "content_type": "transcription",
-                    "text_preview": transcription[:500],  # Store first 500 chars as preview
-                    "full_text": transcription  # Store full text in payload
+                    "text_preview": transcription[:500],
+                    "full_text": transcription
                 }
                 
                 # Use proper Qdrant point format
@@ -732,24 +849,29 @@ class TranscriptionService:
                     payload=transcription_metadata
                 )
                 
-                self.qdrant_client.upsert(
+                upsert_result = self.qdrant_client.upsert(
                     collection_name=collection_name,
                     points=[point]
                 )
                 
                 point_ids.append(transcription_point_id)
                 logger.info(f"Successfully stored transcription point: {transcription_point_id}")
+                logger.info(f"Upsert result: {upsert_result}")
                 
             except Exception as transcription_error:
                 logger.error(f"Failed to store transcription: {transcription_error}")
+                logger.error(f"Error type: {type(transcription_error).__name__}")
                 # Continue to try storing summary even if transcription fails
             
             # Store summary if available
-            if summary and summary.strip() and summary != "Summary generation failed":
+            if summary and summary.strip() and summary != "Summary generation failed" and "too short" not in summary.lower():
                 try:
                     logger.info("Generating vector for summary...")
                     summary_vector = self.embedder.encode(summary).tolist()
                     logger.info(f"Generated summary vector of size: {len(summary_vector)}")
+                    
+                    if len(summary_vector) != 384:
+                        raise ValueError(f"Summary vector size mismatch: expected 384, got {len(summary_vector)}")
                     
                     summary_point_id = str(uuid.uuid4())
                     
@@ -766,31 +888,52 @@ class TranscriptionService:
                         payload=summary_metadata
                     )
                     
-                    self.qdrant_client.upsert(
+                    upsert_result = self.qdrant_client.upsert(
                         collection_name=collection_name,
                         points=[point]
                     )
                     
                     point_ids.append(summary_point_id)
                     logger.info(f"Successfully stored summary point: {summary_point_id}")
+                    logger.info(f"Summary upsert result: {upsert_result}")
                     
                 except Exception as summary_error:
                     logger.error(f"Failed to store summary: {summary_error}")
+                    logger.error(f"Summary error type: {type(summary_error).__name__}")
+            else:
+                logger.info("Skipping summary storage (empty, failed, or too short)")
             
             # Verify storage by checking collection count
             try:
                 collection_info = self.qdrant_client.get_collection(collection_name)
                 logger.info(f"Collection now has {collection_info.points_count} total points")
+                
+                # Also try a quick search to verify the points are actually accessible
+                if point_ids:
+                    test_vector = self.embedder.encode("test query").tolist()
+                    search_result = self.qdrant_client.search(
+                        collection_name=collection_name,
+                        query_vector=test_vector,
+                        limit=1
+                    )
+                    logger.info(f"Verification search returned {len(search_result)} results")
+                
             except Exception as verify_error:
-                logger.warning(f"Could not verify collection count: {verify_error}")
+                logger.warning(f"Could not verify collection status: {verify_error}")
             
-            logger.info(f"Successfully stored {len(point_ids)} points in Qdrant for user {user_id}")
+            if point_ids:
+                logger.info(f"✅ Successfully stored {len(point_ids)} points in Qdrant for user {user_id}")
+            else:
+                logger.warning(f"⚠️ No points were stored for user {user_id}")
+            
             return point_ids
             
         except Exception as e:
-            logger.error(f"Critical error in Qdrant storage: {e}")
+            logger.error(f"❌ Critical error in Qdrant storage: {e}")
             logger.error(f"Error type: {type(e).__name__}")
             logger.error(f"Error details: {str(e)}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
             # Return empty list but don't raise exception to avoid breaking the transcription
             return []
     
