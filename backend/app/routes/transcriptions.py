@@ -158,6 +158,7 @@ async def process_transcription_background(
     finally:
         if db:
             db.close()
+
 @router.post("/upload", response_model=TranscriptionResponse, status_code=status.HTTP_201_CREATED)
 async def upload_file_transcription(
     background_tasks: BackgroundTasks,

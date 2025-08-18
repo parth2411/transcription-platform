@@ -8,20 +8,35 @@ from sqlalchemy.orm import Session
 from datetime import datetime
 import logging
 from sqlalchemy import func
+import uuid
+import os
 
 from ..config import settings
 from ..models import KnowledgeQuery, User, Transcription
-
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 logger = logging.getLogger(__name__)
 
 class KnowledgeService:
     def __init__(self):
-        self.qdrant_client = QdrantClient(
-            url=settings.QDRANT_URL,
-            api_key=settings.QDRANT_API_KEY
-        )
-        self.embedder = SentenceTransformer('all-MiniLM-L6-v2')
-        self.groq_client = Groq(api_key=settings.GROQ_API_KEY)
+        # self.qdrant_client = QdrantClient(
+        #     url=settings.QDRANT_URL,
+        #     api_key=settings.QDRANT_API_KEY
+        # )
+        # self.embedder = SentenceTransformer('all-MiniLM-L6-v2')
+        # self.groq_client = Groq(api_key=settings.GROQ_API_KEY)
+        try:
+            self.qdrant_client = QdrantClient(
+                url=settings.QDRANT_URL,
+                api_key=settings.QDRANT_API_KEY,
+                timeout=60,
+                prefer_grpc=False  # This fixes the pydantic errors
+            )
+            # Test connection
+            collections = self.qdrant_client.get_collections()
+            logger.info(f"✅ Qdrant connected: {len(collections.collections)} collections")
+        except Exception as e:
+            logger.error(f"❌ Qdrant failed: {e}")
+            self.qdrant_client = None
     
     async def query_knowledge_base(
         self, 
