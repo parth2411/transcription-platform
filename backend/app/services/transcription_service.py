@@ -3,7 +3,9 @@ import os
 import subprocess
 import uuid
 import time
-from typing import Optional, List, Tuple
+import json
+import math
+from typing import Optional, List, Tuple, Dict
 from groq import Groq
 from qdrant_client import QdrantClient
 from qdrant_client.http.models import Filter
@@ -13,6 +15,7 @@ from datetime import datetime
 import logging
 import tempfile
 import shutil
+import re
 
 from ..config import settings
 from ..models import Transcription, User
@@ -30,12 +33,416 @@ class TranscriptionService:
         )
         self.embedder = SentenceTransformer('all-MiniLM-L6-v2')
         self.file_service = FileService()
-    
-    async def _transcribe_with_groq(self, audio_path: str, language: str = "auto") -> str:
-        """Transcribe audio using Groq Whisper"""
+        
+        # Enhanced limits and settings for large video support
+        self.MAX_FILE_SIZE = 24 * 1024 * 1024  # 24MB (safely under Groq's 25MB limit)
+        self.CHUNK_SIZE_MINUTES = 8  # Process in 8-minute chunks
+        self.MAX_DURATION_MINUTES = 120  # 2 hour limit
+        self.DOWNLOAD_TIMEOUT = 600  # 10 minutes
+        self.PROCESSING_TIMEOUT = 300  # 5 minutes per chunk
+
+    def _check_dependencies(self):
+        """Check if required dependencies are installed"""
         try:
+            # Check yt-dlp
+            result = subprocess.run(['yt-dlp', '--version'], capture_output=True, text=True)
+            if result.returncode != 0:
+                raise RuntimeError("yt-dlp not found. Please install: pip install yt-dlp")
+            
+            # Check ffmpeg
+            result = subprocess.run(['ffmpeg', '-version'], capture_output=True, text=True)
+            if result.returncode != 0:
+                raise RuntimeError("FFmpeg not found. Please install FFmpeg")
+                
+            logger.info("All dependencies verified successfully")
+            
+        except FileNotFoundError as e:
+            if 'yt-dlp' in str(e):
+                raise RuntimeError("yt-dlp not found. Install with: pip install yt-dlp")
+            elif 'ffmpeg' in str(e):
+                raise RuntimeError("FFmpeg not found. Please install FFmpeg")
+            else:
+                raise RuntimeError(f"Dependency check failed: {e}")
+
+    async def _get_video_duration(self, url: str) -> int:
+        """Get video duration before downloading"""
+        try:
+            cmd = [
+                "yt-dlp",
+                "--dump-json",
+                "--no-download",
+                str(url)
+            ]
+            
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            if result.returncode == 0:
+                info = json.loads(result.stdout)
+                duration = info.get('duration', 0)
+                return int(duration) if duration else 0
+            
+        except Exception as e:
+            logger.warning(f"Could not get video duration: {e}")
+        
+        return 0
+
+    async def _extract_video_info(self, url: str) -> Dict[str, str]:
+        """Extract video information including title using yt-dlp"""
+        try:
+            self._check_dependencies()
+            
+            cmd = [
+                "yt-dlp",
+                "--dump-json",
+                "--no-download",
+                "--no-playlist",
+                str(url)
+            ]
+            
+            logger.info(f"Extracting video info for: {url}")
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            
+            if result.returncode != 0:
+                logger.warning(f"Could not extract video info: {result.stderr}")
+                return self._generate_fallback_info(url)
+            
+            try:
+                video_info = json.loads(result.stdout)
+                
+                # Extract relevant information
+                title = video_info.get('title', '').strip()
+                uploader = video_info.get('uploader', '').strip()
+                duration = video_info.get('duration', 0)
+                upload_date = video_info.get('upload_date', '')
+                description = video_info.get('description', '')[:200]  # First 200 chars
+                
+                # Clean and format title
+                if title:
+                    title = self._clean_title(title)
+                else:
+                    title = self._generate_fallback_title(url)
+                
+                return {
+                    'title': title,
+                    'uploader': uploader,
+                    'duration': str(duration) if duration else '0',
+                    'upload_date': upload_date,
+                    'description': description,
+                    'url': url
+                }
+                
+            except json.JSONDecodeError:
+                logger.warning("Could not parse video info JSON")
+                return self._generate_fallback_info(url)
+                
+        except subprocess.TimeoutExpired:
+            logger.warning("Video info extraction timeout")
+            return self._generate_fallback_info(url)
+        except Exception as e:
+            logger.warning(f"Video info extraction failed: {e}")
+            return self._generate_fallback_info(url)
+
+    def _clean_title(self, title: str) -> str:
+        """Clean and format video title"""
+        # Remove common unwanted patterns
+        title = re.sub(r'\s*\|\s*.*$', '', title)  # Remove "| Channel Name" suffix
+        title = re.sub(r'\s*-\s*YouTube\s*$', '', title, flags=re.IGNORECASE)
+        title = re.sub(r'^\s*\[.*?\]\s*', '', title)  # Remove [tags] at start
+        title = re.sub(r'\s*\(.*?\)\s*$', '', title)  # Remove (info) at end
+        
+        # Clean up whitespace and special characters
+        title = re.sub(r'\s+', ' ', title).strip()
+        title = title[:100]  # Limit length
+        
+        return title if title else "Untitled Video"
+
+    def _generate_fallback_info(self, url: str) -> Dict[str, str]:
+        """Generate fallback info when video info extraction fails"""
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+        
+        # Try to extract domain for better fallback title
+        try:
+            from urllib.parse import urlparse
+            domain = urlparse(url).netloc.replace('www.', '')
+            title = f"Content from {domain} - {timestamp}"
+        except:
+            title = f"Audio/Video Content - {timestamp}"
+        
+        return {
+            'title': title,
+            'uploader': 'Unknown',
+            'duration': '0',
+            'upload_date': '',
+            'description': '',
+            'url': url
+        }
+
+    def _generate_fallback_title(self, url: str) -> str:
+        """Generate a fallback title from URL"""
+        try:
+            from urllib.parse import urlparse
+            parsed = urlparse(url)
+            domain = parsed.netloc.replace('www.', '')
+            
+            # Extract meaningful part from path
+            path_parts = [p for p in parsed.path.split('/') if p and p != 'watch']
+            if path_parts:
+                last_part = path_parts[-1]
+                # Remove file extensions
+                last_part = re.sub(r'\.[a-zA-Z0-9]+$', '', last_part)
+                # Replace hyphens and underscores with spaces
+                last_part = re.sub(r'[-_]+', ' ', last_part)
+                if len(last_part) > 3:  # If meaningful content
+                    return f"{last_part.title()} - {domain}"
+            
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+            return f"Content from {domain} - {timestamp}"
+            
+        except:
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+            return f"Audio/Video Content - {timestamp}"
+
+    def generate_auto_title(self, transcription_text: str = None, file_name: str = None) -> str:
+        """Generate automatic title from transcription text or file name"""
+        try:
+            # If we have transcription text, try to generate a smart title
+            if transcription_text and len(transcription_text.strip()) > 50:
+                # Take first meaningful sentence
+                sentences = transcription_text.split('.')
+                for sentence in sentences[:3]:  # Check first 3 sentences
+                    clean_sentence = sentence.strip()
+                    if len(clean_sentence) > 10 and len(clean_sentence) < 80:
+                        # Remove common filler words from start
+                        clean_sentence = re.sub(r'^(um|uh|so|well|okay|alright|now)\s+', '', clean_sentence, flags=re.IGNORECASE)
+                        return clean_sentence.capitalize()
+            
+            # If we have a filename, use it
+            if file_name:
+                name = os.path.splitext(os.path.basename(file_name))[0]
+                name = re.sub(r'[-_]+', ' ', name)
+                name = re.sub(r'\s+', ' ', name).strip()
+                if len(name) > 3:
+                    return name.title()
+            
+            # Default timestamp-based title
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+            return f"Transcription - {timestamp}"
+            
+        except Exception as e:
+            logger.warning(f"Auto title generation failed: {e}")
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+            return f"Transcription - {timestamp}"
+
+    async def _download_audio_from_url(self, url: str, output_dir: str) -> Tuple[str, Dict[str, str]]:
+        """Enhanced download with large video support"""
+        try:
+            self._check_dependencies()
+            
+            # Check video duration first
+            duration_seconds = await self._get_video_duration(url)
+            duration_minutes = duration_seconds / 60 if duration_seconds else 0
+            
+            logger.info(f"Video duration: {duration_minutes:.1f} minutes")
+            
+            # Check if video is too long
+            if duration_minutes > self.MAX_DURATION_MINUTES:
+                raise RuntimeError(
+                    f"Video too long ({duration_minutes:.1f} minutes). "
+                    f"Maximum supported duration: {self.MAX_DURATION_MINUTES} minutes"
+                )
+            
+            # First extract video info
+            video_info = await self._extract_video_info(url)
+            
+            output_template = os.path.join(output_dir, "downloaded_audio.%(ext)s")
+            
+            # Enhanced yt-dlp command with better compression for large videos
+            cmd = [
+                "yt-dlp",
+                "--extract-audio",
+                "--audio-format", "mp3",  # Use MP3 for better compression
+                "--audio-quality", "5",   # Medium quality for size balance
+                "--no-playlist",
+                "--prefer-free-formats",
+                "--format", "bestaudio[filesize<50M]/bestaudio/best[filesize<50M]",  # Prefer smaller files
+                "--max-filesize", "50M",  # Hard limit on source file size
+                "-o", output_template,
+                str(url)
+            ]
+            
+            logger.info(f"Starting download: {video_info.get('title', 'Unknown')}")
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=self.DOWNLOAD_TIMEOUT)
+            
+            if result.returncode != 0:
+                logger.error(f"yt-dlp failed: {result.stderr}")
+                if "File is larger than max-filesize" in result.stderr:
+                    raise RuntimeError("Video file is too large. Try a shorter video or different quality.")
+                elif "Unsupported URL" in result.stderr:
+                    raise RuntimeError("This URL is not supported. Please try a different link.")
+                elif "Video unavailable" in result.stderr:
+                    raise RuntimeError("Video is unavailable or private. Please check the URL.")
+                else:
+                    raise RuntimeError(f"Download failed: {result.stderr}")
+            
+            # Find downloaded file
+            downloaded_files = [f for f in os.listdir(output_dir) if f.startswith("downloaded_audio")]
+            if not downloaded_files:
+                raise RuntimeError("No audio file was downloaded")
+            
+            audio_path = os.path.join(output_dir, downloaded_files[0])
+            
+            # Convert to WAV for processing
+            wav_path = await self._convert_to_wav_optimized(audio_path)
+            
+            logger.info(f"Successfully downloaded and converted: {wav_path}")
+            return wav_path, video_info
+            
+        except subprocess.TimeoutExpired:
+            raise RuntimeError("Download timeout. The video might be too large or connection is slow.")
+        except Exception as e:
+            logger.error(f"URL download failed: {e}")
+            raise RuntimeError(f"Download failed: {str(e)}")
+
+    async def _convert_to_wav_optimized(self, input_path: str) -> str:
+        """Convert to optimized WAV format"""
+        try:
+            wav_path = input_path.replace(os.path.splitext(input_path)[1], '.wav')
+            
+            cmd = [
+                "ffmpeg", "-y", "-i", input_path,
+                "-ar", "16000",      # 16kHz sample rate (optimized for speech)
+                "-ac", "1",          # Mono
+                "-c:a", "pcm_s16le", # 16-bit PCM
+                wav_path
+            ]
+            
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=self.PROCESSING_TIMEOUT)
+            if result.returncode != 0:
+                raise RuntimeError(f"Audio conversion failed: {result.stderr}")
+            
+            # Remove original file to save space
+            if os.path.exists(input_path) and input_path != wav_path:
+                os.remove(input_path)
+                
+            file_size = os.path.getsize(wav_path)
+            logger.info(f"Converted to WAV: {file_size / (1024*1024):.1f} MB")
+                
+            return wav_path
+            
+        except subprocess.TimeoutExpired:
+            raise RuntimeError("Audio conversion timeout")
+
+    async def _split_audio_into_chunks(self, audio_path: str, chunk_minutes: int = None) -> List[str]:
+        """Split large audio files into smaller chunks for processing"""
+        if chunk_minutes is None:
+            chunk_minutes = self.CHUNK_SIZE_MINUTES
+            
+        try:
+            # Get total duration
+            duration = self._get_audio_duration(audio_path)
+            if duration <= chunk_minutes * 60:
+                return [audio_path]  # No need to split
+            
+            chunk_duration = chunk_minutes * 60  # Convert to seconds
+            num_chunks = math.ceil(duration / chunk_duration)
+            
+            logger.info(f"Splitting {duration/60:.1f} minute audio into {num_chunks} chunks")
+            
+            chunks = []
+            base_path = os.path.splitext(audio_path)[0]
+            
+            for i in range(num_chunks):
+                start_time = i * chunk_duration
+                chunk_path = f"{base_path}_chunk_{i+1:03d}.wav"
+                
+                cmd = [
+                    "ffmpeg", "-y",
+                    "-i", audio_path,
+                    "-ss", str(start_time),
+                    "-t", str(chunk_duration),
+                    "-ar", "16000", "-ac", "1",
+                    chunk_path
+                ]
+                
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+                if result.returncode == 0 and os.path.exists(chunk_path):
+                    # Check if chunk has audio content
+                    chunk_size = os.path.getsize(chunk_path)
+                    if chunk_size > 1000:  # At least 1KB
+                        chunks.append(chunk_path)
+                        logger.info(f"Created chunk {i+1}/{num_chunks}: {chunk_size/(1024*1024):.1f}MB")
+                    else:
+                        os.remove(chunk_path)  # Remove empty chunks
+                else:
+                    logger.warning(f"Failed to create chunk {i+1}")
+            
+            return chunks
+            
+        except Exception as e:
+            logger.error(f"Audio splitting failed: {e}")
+            return [audio_path]  # Fall back to original file
+
+    async def _transcribe_with_groq_chunked(self, audio_path: str, language: str = "auto") -> str:
+        """Enhanced transcription with chunking support for large files"""
+        try:
+            file_size = os.path.getsize(audio_path)
+            logger.info(f"Transcribing audio file: {file_size/(1024*1024):.1f}MB")
+            
+            # If file is small enough, transcribe directly
+            if file_size <= self.MAX_FILE_SIZE:
+                return await self._transcribe_single_file(audio_path, language)
+            
+            # Split into chunks and transcribe each
+            logger.info("File too large, splitting into chunks...")
+            chunks = await self._split_audio_into_chunks(audio_path)
+            
+            if len(chunks) == 1:
+                return await self._transcribe_single_file(chunks[0], language)
+            
+            # Transcribe each chunk
+            transcriptions = []
+            total_chunks = len(chunks)
+            
+            for i, chunk_path in enumerate(chunks):
+                try:
+                    logger.info(f"Transcribing chunk {i+1}/{total_chunks}")
+                    chunk_transcription = await self._transcribe_single_file(chunk_path, language)
+                    
+                    if chunk_transcription.strip():
+                        transcriptions.append(f"[Segment {i+1}] {chunk_transcription}")
+                    
+                    # Clean up chunk file
+                    if os.path.exists(chunk_path) and chunk_path != audio_path:
+                        os.remove(chunk_path)
+                        
+                except Exception as e:
+                    logger.error(f"Failed to transcribe chunk {i+1}: {e}")
+                    transcriptions.append(f"[Segment {i+1}] [Transcription failed: {str(e)}]")
+            
+            # Combine all transcriptions
+            full_transcription = "\n\n".join(transcriptions)
+            logger.info(f"Combined transcription completed, total length: {len(full_transcription)} characters")
+            
+            return full_transcription
+            
+        except Exception as e:
+            logger.error(f"Chunked transcription failed: {e}")
+            raise RuntimeError(f"Transcription failed: {str(e)}")
+
+    async def _transcribe_single_file(self, audio_path: str, language: str = "auto") -> str:
+        """Transcribe a single audio file"""
+        try:
+            file_size = os.path.getsize(audio_path)
+            
+            # Final check for file size
+            if file_size > self.MAX_FILE_SIZE:
+                # Try to compress further
+                compressed_path = await self._compress_audio_aggressive(audio_path)
+                if os.path.getsize(compressed_path) <= self.MAX_FILE_SIZE:
+                    audio_path = compressed_path
+                else:
+                    raise RuntimeError(f"File still too large after compression: {file_size/(1024*1024):.1f}MB")
+            
             with open(audio_path, 'rb') as audio_file:
-                # Use Groq API for transcription
                 response = self.groq_client.audio.transcriptions.create(
                     file=audio_file,
                     model="whisper-large-v3-turbo",
@@ -43,22 +450,102 @@ class TranscriptionService:
                     response_format="text"
                 )
                 
-                # Handle different response formats
                 if hasattr(response, 'text'):
                     transcription = response.text
                 else:
                     transcription = str(response)
                     
-                logger.info(f"Transcription completed, length: {len(transcription)} characters")
+                if not transcription or transcription.strip() == "":
+                    raise RuntimeError("Empty transcription received")
+                    
                 return transcription
                 
         except Exception as e:
-            logger.error(f"Groq transcription failed: {e}")
+            logger.error(f"Single file transcription failed: {e}")
             raise RuntimeError(f"Transcription failed: {str(e)}")
-    
+
+    async def _compress_audio_aggressive(self, audio_path: str) -> str:
+        """Aggressively compress audio for very large files"""
+        try:
+            compressed_path = audio_path.replace('.wav', '_compressed.wav')
+            
+            cmd = [
+                "ffmpeg", "-y", "-i", audio_path,
+                "-ar", "16000",    # Lower sample rate
+                "-ac", "1",        # Mono
+                "-b:a", "32k",     # Very low bitrate
+                compressed_path
+            ]
+            
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            if result.returncode != 0:
+                logger.error(f"Aggressive compression failed: {result.stderr}")
+                return audio_path
+            
+            compressed_size = os.path.getsize(compressed_path)
+            original_size = os.path.getsize(audio_path)
+            
+            logger.info(f"Compressed from {original_size/(1024*1024):.1f}MB to {compressed_size/(1024*1024):.1f}MB")
+            
+            return compressed_path
+            
+        except Exception as e:
+            logger.error(f"Aggressive compression error: {e}")
+            return audio_path
+
+    async def _convert_to_wav_detailed(self, input_path: str, output_path: str):
+        """Convert audio with detailed error handling"""
+        try:
+            cmd = [
+                "ffmpeg", "-y", "-i", input_path,
+                "-ar", "16000",
+                "-ac", "1",
+                "-c:a", "pcm_s16le",
+                output_path
+            ]
+            
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+            if result.returncode != 0:
+                raise RuntimeError(f"Audio conversion failed: {result.stderr}")
+                
+        except subprocess.TimeoutExpired:
+            raise RuntimeError("Audio conversion timeout")
+
+    async def _transcribe_with_groq(self, audio_path: str, language: str = "auto") -> str:
+        """Enhanced transcribe method that supports chunking"""
+        return await self._transcribe_with_groq_chunked(audio_path, language)
+
+    async def _compress_audio(self, audio_path: str) -> str:
+        """Compress audio file to reduce size"""
+        try:
+            compressed_path = audio_path.replace('.wav', '_compressed.wav')
+            
+            cmd = [
+                "ffmpeg", "-y", "-i", audio_path,
+                "-ar", "16000",
+                "-ac", "1",
+                "-b:a", "64k",
+                compressed_path
+            ]
+            
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                logger.error(f"Audio compression failed: {result.stderr}")
+                return audio_path
+            
+            return compressed_path
+            
+        except Exception as e:
+            logger.error(f"Audio compression error: {e}")
+            return audio_path
+
     async def _generate_summary(self, text: str) -> str:
         """Generate summary using Groq"""
         try:
+            # Don't generate summary for very short texts
+            if len(text.split()) < 50:
+                return "Text too short for meaningful summary."
+            
             prompt = f"""
             Generate a comprehensive summary of the following transcription organized into clear sections.
             Use markdown formatting with headers (##) for main sections and bullet points for key details.
@@ -76,9 +563,9 @@ class TranscriptionService:
             """
             
             response = self.groq_client.chat.completions.create(
-                model="llama3-70b-8192",
+                model="llama-3.1-8b-instant",
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=1000,
+                max_tokens=8000,
                 temperature=0.3
             )
             
@@ -89,7 +576,7 @@ class TranscriptionService:
         except Exception as e:
             logger.error(f"Summary generation failed: {e}")
             return "Summary generation failed"
-    
+
     async def _convert_to_wav(self, input_path: str) -> str:
         """Convert audio file to WAV format using ffmpeg"""
         try:
@@ -181,25 +668,40 @@ class TranscriptionService:
         transcription_id: str,
         metadata: Optional[dict] = None
     ) -> List[str]:
-        """Store transcription and summary in Qdrant vector database with metadata"""
+        """Store transcription and summary in Qdrant vector database with enhanced error handling"""
+        point_ids = []
+        
         try:
             collection_name = f"user_{user_id}_transcriptions"
+            logger.info(f"Storing in Qdrant collection: {collection_name}")
             
-            # Ensure collection exists
+            # Ensure collection exists with proper configuration
             try:
-                self.qdrant_client.get_collection(collection_name)
-            except:
+                collection_info = self.qdrant_client.get_collection(collection_name)
+                logger.info(f"Collection exists with {collection_info.points_count} points")
+            except Exception as collection_error:
+                logger.info(f"Creating new collection: {collection_name}")
+                
+                # Use updated Qdrant configuration format
+                from qdrant_client.http.models import VectorParams, Distance
+                
                 self.qdrant_client.create_collection(
                     collection_name=collection_name,
-                    vectors_config={"size": 384, "distance": "Cosine"}
+                    vectors_config=VectorParams(size=384, distance=Distance.COSINE)
                 )
-                logger.info(f"Created Qdrant collection: {collection_name}")
+                logger.info(f"Successfully created Qdrant collection: {collection_name}")
             
-            point_ids = []
+            # Validate inputs
+            if not transcription or not transcription.strip():
+                logger.warning("Empty transcription text, skipping storage")
+                return []
+            
+            # Prepare base metadata
             base_metadata = {
                 "user_id": user_id,
                 "transcription_id": transcription_id,
-                "created_at": datetime.utcnow().isoformat()
+                "created_at": datetime.utcnow().isoformat(),
+                "content_length": len(transcription)
             }
             
             # Add custom metadata if provided
@@ -207,92 +709,90 @@ class TranscriptionService:
                 base_metadata.update(metadata)
             
             # Store transcription
-            transcription_vector = self.embedder.encode(transcription).tolist()
-            transcription_point_id = str(uuid.uuid4())
-            
-            transcription_metadata = {
-                **base_metadata,
-                "content_type": "transcription",
-                "text": transcription[:1000]  # Store first 1000 chars in metadata
-            }
-            
-            self.qdrant_client.upsert(
-                collection_name=collection_name,
-                points=[{
-                    "id": transcription_point_id,
-                    "vector": transcription_vector,
-                    "payload": transcription_metadata
-                }]
-            )
-            point_ids.append(transcription_point_id)
-            
-            # Store summary if available
-            if summary and summary.strip() and summary != "Summary generation failed":
-                summary_vector = self.embedder.encode(summary).tolist()
-                summary_point_id = str(uuid.uuid4())
+            try:
+                logger.info("Generating vector for transcription...")
+                transcription_vector = self.embedder.encode(transcription).tolist()
+                logger.info(f"Generated vector of size: {len(transcription_vector)}")
                 
-                summary_metadata = {
+                transcription_point_id = str(uuid.uuid4())
+                
+                transcription_metadata = {
                     **base_metadata,
-                    "content_type": "summary", 
-                    "text": summary[:1000]  # Store first 1000 chars in metadata
+                    "content_type": "transcription",
+                    "text_preview": transcription[:500],  # Store first 500 chars as preview
+                    "full_text": transcription  # Store full text in payload
                 }
+                
+                # Use proper Qdrant point format
+                from qdrant_client.http.models import PointStruct
+                
+                point = PointStruct(
+                    id=transcription_point_id,
+                    vector=transcription_vector,
+                    payload=transcription_metadata
+                )
                 
                 self.qdrant_client.upsert(
                     collection_name=collection_name,
-                    points=[{
-                        "id": summary_point_id,
-                        "vector": summary_vector,
-                        "payload": summary_metadata
-                    }]
+                    points=[point]
                 )
-                point_ids.append(summary_point_id)
+                
+                point_ids.append(transcription_point_id)
+                logger.info(f"Successfully stored transcription point: {transcription_point_id}")
+                
+            except Exception as transcription_error:
+                logger.error(f"Failed to store transcription: {transcription_error}")
+                # Continue to try storing summary even if transcription fails
             
-            logger.info(f"Stored {len(point_ids)} points in Qdrant for user {user_id}")
+            # Store summary if available
+            if summary and summary.strip() and summary != "Summary generation failed":
+                try:
+                    logger.info("Generating vector for summary...")
+                    summary_vector = self.embedder.encode(summary).tolist()
+                    logger.info(f"Generated summary vector of size: {len(summary_vector)}")
+                    
+                    summary_point_id = str(uuid.uuid4())
+                    
+                    summary_metadata = {
+                        **base_metadata,
+                        "content_type": "summary",
+                        "text_preview": summary[:500],
+                        "full_text": summary
+                    }
+                    
+                    point = PointStruct(
+                        id=summary_point_id,
+                        vector=summary_vector,
+                        payload=summary_metadata
+                    )
+                    
+                    self.qdrant_client.upsert(
+                        collection_name=collection_name,
+                        points=[point]
+                    )
+                    
+                    point_ids.append(summary_point_id)
+                    logger.info(f"Successfully stored summary point: {summary_point_id}")
+                    
+                except Exception as summary_error:
+                    logger.error(f"Failed to store summary: {summary_error}")
+            
+            # Verify storage by checking collection count
+            try:
+                collection_info = self.qdrant_client.get_collection(collection_name)
+                logger.info(f"Collection now has {collection_info.points_count} total points")
+            except Exception as verify_error:
+                logger.warning(f"Could not verify collection count: {verify_error}")
+            
+            logger.info(f"Successfully stored {len(point_ids)} points in Qdrant for user {user_id}")
             return point_ids
             
         except Exception as e:
-            logger.error(f"Failed to store in Qdrant: {e}")
+            logger.error(f"Critical error in Qdrant storage: {e}")
+            logger.error(f"Error type: {type(e).__name__}")
+            logger.error(f"Error details: {str(e)}")
+            # Return empty list but don't raise exception to avoid breaking the transcription
             return []
-    
-    async def _download_audio_from_url(self, url: str, output_dir: str) -> str:
-        """Download audio from URL using yt-dlp"""
-        try:
-            output_path = os.path.join(output_dir, "downloaded_audio.wav")
-            
-            cmd = [
-                "yt-dlp",
-                "--extract-audio",
-                "--audio-format", "wav",
-                "--audio-quality", "0",
-                "-o", output_path.replace('.wav', '.%(ext)s'),
-                url
-            ]
-            
-            result = subprocess.run(cmd, capture_output=True, text=True)
-            if result.returncode != 0:
-                logger.error(f"yt-dlp failed: {result.stderr}")
-                raise RuntimeError(f"URL download failed: {result.stderr}")
-            
-            # Find the actual output file (yt-dlp might change the extension)
-            for file in os.listdir(output_dir):
-                if file.startswith("downloaded_audio"):
-                    actual_path = os.path.join(output_dir, file)
-                    if not file.endswith('.wav'):
-                        # Convert to wav if needed
-                        wav_path = output_path
-                        subprocess.run([
-                            "ffmpeg", "-y", "-i", actual_path,
-                            "-ar", "16000", "-ac", "1", wav_path
-                        ], capture_output=True)
-                        os.remove(actual_path)
-                        return wav_path
-                    return actual_path
-            
-            raise RuntimeError("Downloaded file not found")
-            
-        except Exception as e:
-            logger.error(f"URL download failed: {e}")
-            raise RuntimeError(f"URL download failed: {str(e)}")
     
     async def delete_from_qdrant(self, user_id: str, point_ids: List[str]) -> bool:
         """Delete points from Qdrant collection"""
@@ -318,11 +818,16 @@ class TranscriptionService:
         file_path: str
     ) -> Transcription:
         """
-        Process uploaded file for transcription
+        Process uploaded file for transcription with enhanced large file support
         """
         try:
             logger.info(f"Starting transcription processing for {transcription.id}")
             start_time = time.time()
+            
+            # Generate auto title if not provided
+            if not transcription.title or transcription.title.strip() == "":
+                transcription.title = self.generate_auto_title(file_name=file_path)
+                logger.info(f"Auto-generated title: {transcription.title}")
             
             # Update status to processing
             transcription.status = "processing"
@@ -335,9 +840,16 @@ class TranscriptionService:
             duration = self._get_audio_duration(audio_path)
             transcription.duration_seconds = duration
             
-            # Transcribe with Groq
-            transcription_text = await self._transcribe_with_groq(audio_path, transcription.language)
+            # Enhanced transcription with chunking support
+            transcription_text = await self._transcribe_with_groq_chunked(audio_path, transcription.language)
             transcription.transcription_text = transcription_text
+            
+            # Update title with transcription content if still generic
+            if "Transcription -" in transcription.title:
+                smart_title = self.generate_auto_title(transcription_text, file_path)
+                if smart_title and smart_title != transcription.title:
+                    transcription.title = smart_title
+                    logger.info(f"Updated title from transcription: {transcription.title}")
             
             # Generate summary if requested
             if transcription.generate_summary and transcription_text:
@@ -390,7 +902,7 @@ class TranscriptionService:
         url: str
     ) -> Transcription:
         """
-        Process URL (YouTube, podcast) for transcription
+        Process URL with enhanced large video support and auto title extraction
         """
         try:
             logger.info(f"Starting URL transcription for {transcription.id}: {url}")
@@ -399,17 +911,58 @@ class TranscriptionService:
             transcription.status = "processing"
             db.commit()
             
-            # Download audio from URL using yt-dlp
+            # Download audio from URL using enhanced method with video info
             temp_dir = tempfile.mkdtemp()
             try:
-                audio_path = await self._download_audio_from_url(url, temp_dir)
+                audio_path, video_info = await self._download_audio_from_url(url, temp_dir)
+                
+                # Use video title if user didn't provide one or provided generic title
+                if not transcription.title or transcription.title.strip() == "" or "Transcription -" in transcription.title:
+                    transcription.title = video_info.get('title', self.generate_auto_title())
+                    logger.info(f"Using extracted title: {transcription.title}")
                 
                 # Update file info
                 transcription.file_size = os.path.getsize(audio_path)
                 transcription.duration_seconds = self._get_audio_duration(audio_path)
                 
-                # Process like a regular file
-                return await self.process_file_transcription(db, transcription, audio_path)
+                # Enhanced transcription with chunking support
+                transcription_text = await self._transcribe_with_groq_chunked(audio_path, transcription.language)
+                transcription.transcription_text = transcription_text
+                
+                # Generate summary if requested
+                if transcription.generate_summary and transcription_text:
+                    summary = await self._generate_summary(transcription_text)
+                    transcription.summary_text = summary
+                
+                # Store in knowledge base if requested
+                if transcription.add_to_knowledge_base and transcription_text:
+                    point_ids = await self._store_in_qdrant(
+                        transcription_text,
+                        transcription.summary_text,
+                        str(transcription.user_id),
+                        str(transcription.id),
+                        {
+                            "title": transcription.title,
+                            "created_at": transcription.created_at.isoformat(),
+                            "type": "url_download",
+                            "source_url": str(url),
+                            "uploader": video_info.get('uploader', ''),
+                            "duration_seconds": transcription.duration_seconds
+                        }
+                    )
+                    transcription.qdrant_point_ids = point_ids
+                    transcription.qdrant_collection = f"user_{transcription.user_id}_transcriptions"
+                
+                # Mark as completed
+                transcription.status = "completed"
+                transcription.completed_at = datetime.utcnow()
+                processing_time = int(time.time() - time.time())
+                transcription.processing_time_seconds = processing_time
+                
+                db.commit()
+                logger.info(f"URL transcription completed for {transcription.id}")
+                
+                return transcription
                 
             finally:
                 shutil.rmtree(temp_dir, ignore_errors=True)
@@ -432,6 +985,11 @@ class TranscriptionService:
         """
         try:
             logger.info(f"Starting text processing for {transcription.id}")
+            
+            # Generate auto title if not provided
+            if not transcription.title or transcription.title.strip() == "":
+                transcription.title = self.generate_auto_title(text)
+                logger.info(f"Auto-generated title: {transcription.title}")
             
             transcription.status = "processing"
             transcription.transcription_text = text
@@ -470,3 +1028,129 @@ class TranscriptionService:
             transcription.error_message = str(e)
             db.commit()
             raise
+    # Add these debug methods to your TranscriptionService class
+
+    async def debug_qdrant_connection(self, user_id: str) -> Dict:
+        """Debug Qdrant connection and collection status"""
+        try:
+            collection_name = f"user_{user_id}_transcriptions"
+            
+            # Test basic connection
+            collections = self.qdrant_client.get_collections()
+            
+            debug_info = {
+                "connection_status": "connected",
+                "total_collections": len(collections.collections),
+                "target_collection": collection_name,
+                "collection_exists": False,
+                "points_count": 0,
+                "collection_info": None,
+                "embedder_test": None
+            }
+            
+            # Check if target collection exists
+            try:
+                collection_info = self.qdrant_client.get_collection(collection_name)
+                debug_info["collection_exists"] = True
+                debug_info["points_count"] = collection_info.points_count
+                debug_info["collection_info"] = {
+                    "vectors_count": collection_info.vectors_count,
+                    "segments_count": collection_info.segments_count,
+                    "status": collection_info.status
+                }
+            except Exception as e:
+                debug_info["collection_error"] = str(e)
+            
+            # Test embedder
+            try:
+                test_vector = self.embedder.encode("test sentence").tolist()
+                debug_info["embedder_test"] = {
+                    "status": "working",
+                    "vector_size": len(test_vector),
+                    "sample_values": test_vector[:5]
+                }
+            except Exception as e:
+                debug_info["embedder_test"] = {
+                    "status": "failed",
+                    "error": str(e)
+                }
+            
+            return debug_info
+            
+        except Exception as e:
+            return {
+                "connection_status": "failed",
+                "error": str(e),
+                "error_type": type(e).__name__
+            }
+
+    async def test_qdrant_storage(self, user_id: str) -> Dict:
+        """Test storing a simple document in Qdrant"""
+        try:
+            test_text = "This is a test transcription for debugging purposes."
+            test_summary = "Test summary for debugging."
+            
+            logger.info("Starting Qdrant storage test...")
+            
+            point_ids = await self._store_in_qdrant(
+                transcription=test_text,
+                summary=test_summary,
+                user_id=user_id,
+                transcription_id="test-transcription-id",
+                metadata={
+                    "title": "Test Transcription",
+                    "type": "debug_test",
+                    "created_at": datetime.utcnow().isoformat()
+                }
+            )
+            
+            return {
+                "test_status": "success",
+                "points_stored": len(point_ids),
+                "point_ids": point_ids,
+                "message": "Test storage completed successfully"
+            }
+            
+        except Exception as e:
+            logger.error(f"Test storage failed: {e}")
+            return {
+                "test_status": "failed",
+                "error": str(e),
+                "error_type": type(e).__name__
+            }
+
+    async def manual_store_transcription(
+        self, 
+        user_id: str, 
+        transcription_id: str, 
+        transcription_text: str, 
+        summary_text: Optional[str] = None
+    ) -> Dict:
+        """Manually store an existing transcription in Qdrant"""
+        try:
+            logger.info(f"Manually storing transcription {transcription_id} for user {user_id}")
+            
+            point_ids = await self._store_in_qdrant(
+                transcription=transcription_text,
+                summary=summary_text,
+                user_id=user_id,
+                transcription_id=transcription_id,
+                metadata={
+                    "title": f"Manual Store - {transcription_id}",
+                    "type": "manual_storage",
+                    "created_at": datetime.utcnow().isoformat()
+                }
+            )
+            
+            return {
+                "status": "success",
+                "points_stored": len(point_ids),
+                "point_ids": point_ids
+            }
+            
+        except Exception as e:
+            logger.error(f"Manual storage failed: {e}")
+            return {
+                "status": "failed",
+                "error": str(e)
+            }

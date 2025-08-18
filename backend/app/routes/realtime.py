@@ -6,6 +6,7 @@ import os
 import logging
 from datetime import datetime
 from typing import Optional
+import uuid
 
 from ..database import get_db
 from ..models import User, Transcription
