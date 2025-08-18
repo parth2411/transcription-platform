@@ -14,5 +14,6 @@ out/
 # Environment files
 backend/.env*
 frontend/.env.local*
+.env*
 # OS files
 .DS_Store
