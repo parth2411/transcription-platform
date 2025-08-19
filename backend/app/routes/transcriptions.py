@@ -1305,11 +1305,11 @@ async def test_qdrant_storage(
                 from sentence_transformers import SentenceTransformer
                 
                 client = QdrantClient(
-            url=settings.QDRANT_URL,
-            api_key=settings.QDRANT_API_KEY,
-            timeout=60,
-            prefer_grpc=False
-        )
+                    url=settings.QDRANT_URL,
+                    api_key=settings.QDRANT_API_KEY,
+                    timeout=60,
+                    prefer_grpc=False
+                )
                 embedder = SentenceTransformer('all-MiniLM-L6-v2')
                 
                 collection_name = f"user_{current_user.id}_transcriptions"

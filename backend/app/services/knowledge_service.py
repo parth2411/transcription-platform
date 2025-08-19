@@ -69,12 +69,11 @@ class KnowledgeService:
         query: str, 
         limit: int = 5
     ) -> Dict:
-        """Query the user's knowledge base and return contextual answer"""
+        """Query the user's knowledge base using scroll method"""
         
-        # Check if services are available
         if not self.qdrant_available:
             return {
-                "answer": "Knowledge base service is currently unavailable. Please try again later.",
+                "answer": "Knowledge base service is currently unavailable.",
                 "sources": [],
                 "confidence": 0.0,
                 "query_id": ""
@@ -82,7 +81,7 @@ class KnowledgeService:
         
         if not self.embedder_available:
             return {
-                "answer": "Text embedding service is currently unavailable. Please try again later.",
+                "answer": "Text embedding service is currently unavailable.",
                 "sources": [],
                 "confidence": 0.0,
                 "query_id": ""
@@ -92,28 +91,47 @@ class KnowledgeService:
             start_time = time.time()
             collection_name = f"user_{user.id}_transcriptions"
             
-            # Check if user has any data
+            # Check if collection exists and has data using scroll method
             try:
-                collection_info = self.qdrant_client.get_collection(collection_name)
-                if collection_info.points_count == 0:
+                collections = self.qdrant_client.get_collections()
+                collection_names = [c.name for c in collections.collections]
+                
+                if collection_name not in collection_names:
+                    return {
+                        "answer": "No knowledge base found. Please upload and process some audio files with 'Add to Knowledge Base' enabled.",
+                        "sources": [],
+                        "confidence": 0.0,
+                        "query_id": ""
+                    }
+                
+                # Use scroll to check if collection has data
+                test_scroll = self.qdrant_client.scroll(
+                    collection_name=collection_name,
+                    limit=1,
+                    with_payload=False,
+                    with_vectors=False
+                )
+                
+                if len(test_scroll[0]) == 0:
                     return {
                         "answer": "No transcriptions found in your knowledge base. Please upload and process some audio files with 'Add to Knowledge Base' enabled.",
                         "sources": [],
                         "confidence": 0.0,
                         "query_id": ""
                     }
-                logger.info(f"Found collection with {collection_info.points_count} points")
+                
+                logger.info(f"Collection {collection_name} has data, proceeding with search")
+                
             except Exception as e:
-                logger.warning(f"Collection not found or error: {e}")
+                logger.warning(f"Collection check failed: {e}")
                 return {
-                    "answer": "No knowledge base found. Please upload and process some audio files with 'Add to Knowledge Base' enabled.",
+                    "answer": "Error accessing knowledge base. Please try again later.",
                     "sources": [],
                     "confidence": 0.0,
                     "query_id": ""
                 }
             
             # Create query vector
-            logger.info(f"Creating embedding for query: {query}")
             query_vector = self.embedder.encode(query).tolist()
             
             # Search similar content
@@ -123,8 +141,6 @@ class KnowledgeService:
                 limit=limit,
                 score_threshold=0.3
             )
-            
-            logger.info(f"Found {len(search_results)} search results")
             
             if not search_results:
                 return {
@@ -140,7 +156,6 @@ class KnowledgeService:
             
             for result in search_results:
                 payload = result.payload
-                logger.info(f"Processing result with score: {result.score}")
                 if payload and payload.get("full_text"):
                     context_parts.append(payload["full_text"])
                     sources.append({
@@ -152,15 +167,15 @@ class KnowledgeService:
             
             if not context_parts:
                 return {
-                    "answer": "Found relevant transcriptions but could not extract content. This might be a data storage issue.",
+                    "answer": "Found relevant transcriptions but could not extract content.",
                     "sources": sources,
                     "confidence": 0.0,
                     "query_id": ""
                 }
             
-            # Generate contextual answer using Groq
+            # Generate answer using Groq
             if self.groq_available:
-                context = "\n\n".join(context_parts)
+                context = "\\n\\n".join(context_parts)
                 
                 prompt = f"""
                 Based on the following transcriptions from the user's knowledge base, answer their question accurately and helpfully.
@@ -170,12 +185,12 @@ class KnowledgeService:
                 Relevant Transcriptions:
                 {context}
                 
-                Please provide a comprehensive answer based on the content above. If the transcriptions don't contain enough information to fully answer the question, mention what information is available and what might be missing.
+                Please provide a comprehensive answer based on the content above.
                 """
                 
                 try:
                     response = self.groq_client.chat.completions.create(
-                        model="mixtral-8x7b-32768",
+                        model="llama-3.1-8b-instant",
                         messages=[{"role": "user", "content": prompt}],
                         max_tokens=1000,
                         temperature=0.3
@@ -186,7 +201,7 @@ class KnowledgeService:
                     
                 except Exception as e:
                     logger.error(f"Groq API error: {e}")
-                    answer = f"Found {len(sources)} relevant transcription(s) but could not generate a comprehensive answer due to AI service unavailability."
+                    answer = f"Found {len(sources)} relevant transcription(s) but could not generate a comprehensive answer."
                     confidence = 0.5
             else:
                 answer = f"Found {len(sources)} relevant transcription(s). AI summarization is currently unavailable."
@@ -197,16 +212,13 @@ class KnowledgeService:
             query_record = KnowledgeQuery(
                 id=query_id,
                 user_id=user.id,
-                query=query,
-                answer=answer,
-                confidence=confidence,
+                query_text=query,
+                response_text=answer,
+                confidence_score=confidence,
                 response_time_ms=int((time.time() - start_time) * 1000),
-                source_count=len(sources)
             )
             db.add(query_record)
             db.commit()
-            
-            logger.info(f"Query completed successfully with {len(sources)} sources")
             
             return {
                 "answer": answer,
@@ -217,8 +229,6 @@ class KnowledgeService:
             
         except Exception as e:
             logger.error(f"Knowledge base query failed: {e}")
-            import traceback
-            logger.error(f"Traceback: {traceback.format_exc()}")
             return {
                 "answer": "An error occurred while searching your knowledge base. Please try again later.",
                 "sources": [],
@@ -227,22 +237,41 @@ class KnowledgeService:
             }
 
     async def get_knowledge_base_stats(self, db: Session, user: User) -> Dict:
-        """Get statistics about user's knowledge base with proper error handling"""
+        """Get statistics about user's knowledge base using scroll method"""
         try:
             collection_name = f"user_{user.id}_transcriptions"
             
-            # Get Qdrant stats if available
+            # Get Qdrant stats using scroll method (avoids Pydantic validation issues)
             vector_count = 0
-            if self.qdrant_available:
+            if self.qdrant_available and self.qdrant_client:
                 try:
-                    collection_info = self.qdrant_client.get_collection(collection_name)
-                    vector_count = collection_info.points_count
-                    logger.info(f"Qdrant collection {collection_name} has {vector_count} points")
+                    # First check if collection exists by listing collections
+                    collections = self.qdrant_client.get_collections()
+                    collection_names = [c.name for c in collections.collections]
+                    
+                    if collection_name in collection_names:
+                        # Use scroll to count points (avoids get_collection Pydantic issues)
+                        logger.info(f"Counting points in collection: {collection_name}")
+                        scroll_result = self.qdrant_client.scroll(
+                            collection_name=collection_name,
+                            limit=10000,  # Large limit to get all points
+                            with_payload=False,
+                            with_vectors=False
+                        )
+                        vector_count = len(scroll_result[0])
+                        logger.info(f"✅ Found {vector_count} vectors in {collection_name}")
+                    else:
+                        logger.info(f"ℹ️  Collection {collection_name} does not exist yet")
+                        vector_count = 0
+                        
                 except Exception as e:
                     logger.warning(f"Could not get Qdrant stats: {e}")
                     vector_count = 0
+            else:
+                logger.info("Qdrant client not available")
+                vector_count = 0
             
-            # Get database stats with proper SQLAlchemy
+            # Get database stats
             transcription_count = db.query(Transcription).filter(
                 Transcription.user_id == user.id,
                 Transcription.status == "completed"
@@ -252,7 +281,6 @@ class KnowledgeService:
                 KnowledgeQuery.user_id == user.id
             ).count()
             
-            # Get total duration
             total_duration = db.query(
                 func.sum(Transcription.duration_seconds)
             ).filter(
@@ -260,16 +288,8 @@ class KnowledgeService:
                 Transcription.status == "completed"
             ).scalar() or 0
             
-            # Count transcriptions with knowledge base storage
-            kb_stored_count = db.query(Transcription).filter(
-                Transcription.user_id == user.id,
-                Transcription.status == "completed",
-                Transcription.qdrant_point_ids.isnot(None)
-            ).count()
-            
             logger.info(f"Knowledge base stats for user {user.id}:")
             logger.info(f"  - Total completed transcriptions: {transcription_count}")
-            logger.info(f"  - Transcriptions in knowledge base: {kb_stored_count}")
             logger.info(f"  - Vector points in Qdrant: {vector_count}")
             logger.info(f"  - Total queries made: {query_count}")
             
@@ -283,18 +303,14 @@ class KnowledgeService:
             
         except Exception as e:
             logger.error(f"Failed to get knowledge base stats: {e}")
-            import traceback
-            logger.error(f"Traceback: {traceback.format_exc()}")
-            
             return {
                 "transcription_count": 0,
                 "vector_count": 0,
                 "query_count": 0,
                 "total_duration_hours": 0,
-                "collection_name": collection_name,
+                "collection_name": f"user_{user.id}_transcriptions",
                 "error": str(e)
             }
-
     async def get_query_history(
         self, 
         db: Session, 
@@ -313,12 +329,12 @@ class KnowledgeService:
             return [
                 {
                     "id": str(q.id),
-                    "query": q.query,
-                    "answer": q.answer,
-                    "confidence": q.confidence,
+                    "query": q.query_text,
+                    "answer": q.response_text,
+                    "confidence": q.confidence_score,
                     "response_time_ms": q.response_time_ms,
                     "created_at": q.created_at.isoformat(),
-                    "source_count": q.source_count
+                    "source_count": 0  # Default value since this field doesn't exist in model
                 }
                 for q in queries
             ]
