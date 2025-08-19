@@ -118,7 +118,9 @@ export function RealTimeRecorder({ onTranscriptionComplete }: RealTimeRecorderPr
           requestAnimationFrame(updateAudioLevel)
         }
       }
-      updateAudioLevel()
+      
+      // Start audio level monitoring immediately
+      requestAnimationFrame(updateAudioLevel)
 
       // Set up MediaRecorder
       mediaRecorderRef.current = new MediaRecorder(stream, {
@@ -363,59 +365,36 @@ export function RealTimeRecorder({ onTranscriptionComplete }: RealTimeRecorderPr
                   <Mic className="w-8 h-8 relative z-10" />
                 </Button>
                 
-                {/* Floating action hint */}
-                <div className="absolute -bottom-8 left-1/2 transform -translate-x-1/2 text-sm text-gray-500 whitespace-nowrap">
-                  Click to start recording
-                </div>
               </div>
             ) : (
-              <div className="relative">
-                {/* Stop Recording Button with Breathing Animation */}
-                <Button
-                  onClick={stopRecording}
-                  size="lg"
-                  className="bg-gradient-to-r from-gray-600 to-gray-700 hover:from-gray-700 hover:to-gray-800 text-white rounded-full w-20 h-20 shadow-lg hover:shadow-xl transition-all duration-300 relative overflow-hidden group animate-pulse"
-                >
-                  {/* Breathing effect for recording */}
-                  <div className="absolute inset-0 rounded-full bg-red-500 opacity-30 animate-ping"></div>
-                  <div className="absolute inset-1 rounded-full bg-red-400 opacity-20 animate-pulse"></div>
-                  
-                  {/* Stop icon */}
-                  <Square className="w-8 h-8 relative z-10" />
-                </Button>
+            <div className="flex flex-col items-center gap-4">
+                {/* Button container (can keep relative for internal animations) */}
+                <div className="relative">
+                    <Button
+                      onClick={stopRecording}
+                      size="lg"
+                      className="bg-gradient-to-r from-gray-600 to-gray-700 hover:from-gray-700 hover:to-gray-800 text-white rounded-full w-20 h-20 shadow-lg hover:shadow-xl transition-all duration-300 relative overflow-hidden group animate-pulse"
+                    >
+                      {/* Breathing effect for recording */}
+                      <div className="absolute inset-0 rounded-full bg-red-500 opacity-30 animate-ping"></div>
+                      <div className="absolute inset-1 rounded-full bg-red-400 opacity-20 animate-pulse"></div>
+                      
+                      {/* Stop icon */}
+                      <Square className="w-8 h-8 relative z-10" />
+                    </Button>
+                </div>
                 
-                {/* Recording indicator */}
-                <div className="absolute -bottom-8 left-1/2 transform -translate-x-1/2 text-sm text-red-600 whitespace-nowrap font-medium">
+                {/* Recording indicator - NOW IN NORMAL FLOW & CORRECTLY SPACED */}
+                <div className="text-sm text-red-600 whitespace-nowrap font-medium">
                   Recording: {formatTime(recordingTime)}
                 </div>
-              </div>
-            )}
+            </div>
+          )}
           </div>
 
           {/* Recording Status with Clean Design */}
           {isRecording && (
-            <div className="text-center space-y-4 w-full max-w-md">
-              {/* Simple recording timer */}
-              <div className="text-lg font-medium text-red-600">
-                Recording: {formatTime(recordingTime)}
-              </div>
-              
-              {/* Clean Audio Level Visualizer */}
-              <div className="space-y-2">
-                <div className="flex items-center justify-center space-x-2 text-sm text-gray-600">
-                  <Volume2 className="w-4 h-4" />
-                  <span>Audio Level</span>
-                </div>
-                <div className="w-full bg-gray-200 rounded-full h-3 overflow-hidden shadow-inner">
-                  <div 
-                    className="h-full bg-gradient-to-r from-green-400 via-yellow-400 to-red-500 transition-all duration-150 ease-out rounded-full"
-                    style={{ 
-                      width: `${Math.min(100, (audioLevel / 255) * 100)}%`
-                    }}
-                  />
-                </div>
-              </div>
-
+            <div className="text-center space-y-6 w-full max-w-md">
               {/* Simple waveform-style animation bars */}
               <div className="flex items-center justify-center space-x-1">
                 {[...Array(8)].map((_, i) => (
@@ -435,7 +414,7 @@ export function RealTimeRecorder({ onTranscriptionComplete }: RealTimeRecorderPr
 
           {/* Processing Status with Modern Spinner */}
           {isProcessing && (
-            <div className="text-center space-y-4">
+            <div className="flex flex-col items-center space-y-4">
               <div className="relative">
                 {/* Multi-layer loading spinner */}
                 <div className="w-16 h-16 relative">

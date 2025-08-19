@@ -253,7 +253,7 @@ export default function DashboardPage() {
               </Link>
 
               {/* Real-time Recording */}
-              <Link href="/realtime">
+              <Link href="/transcriptions/new?tab=realtime">
                 <Card className="cursor-pointer hover:shadow-md transition-shadow">
                   <CardContent className="p-6 text-center">
                     <Mic className="w-8 h-8 text-red-600 mx-auto mb-3" />
@@ -342,12 +342,12 @@ export default function DashboardPage() {
                       Upload File
                     </Button>
                   </Link>
-                  <Link href="/realtime">
-                    <Button variant="outline" className="border-red-200 text-red-600 hover:bg-red-50">
+                  <Link href="/transcriptions/new?tab=realtime">
+                    <Button variant="outline">
                       <Mic className="w-4 h-4 mr-2" />
                       Start Recording
-                    </Button>
-                  </Link>
+                    </Button>    
+                  </Link>              
                 </div>
               </div>
             )}
