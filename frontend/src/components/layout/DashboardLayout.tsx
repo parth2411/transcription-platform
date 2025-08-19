@@ -38,10 +38,26 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
     { name: 'Settings', href: '/settings', icon: Settings },
   ]
 
+  // 🔧 FIXED: Better path matching logic
   const isActivePath = (href: string) => {
+    // Exact match for dashboard
     if (href === '/dashboard') {
       return pathname === href
     }
+    
+    // Special handling for transcription routes
+    if (href === '/transcriptions/new') {
+      return pathname === '/transcriptions/new'
+    }
+    
+    if (href === '/transcriptions') {
+      // Active for /transcriptions but NOT for /transcriptions/new
+      return pathname === '/transcriptions' || 
+             (pathname.startsWith('/transcriptions/') && 
+              pathname !== '/transcriptions/new')
+    }
+    
+    // For other routes (knowledge, settings), use normal startsWith
     return pathname.startsWith(href)
   }
 
