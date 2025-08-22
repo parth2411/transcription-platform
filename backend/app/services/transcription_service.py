@@ -5,7 +5,7 @@ import uuid
 import time
 import json
 import math
-from typing import Optional, List, Tuple, Dict
+from typing import Optional, List, Tuple, Dict, Any
 from groq import Groq
 from qdrant_client import QdrantClient
 from qdrant_client.http.models import Filter
@@ -16,6 +16,8 @@ import logging
 import tempfile
 import shutil
 import re
+import asyncio
+from fastapi import UploadFile
 
 from ..config import settings
 from ..models import Transcription, User
@@ -1274,3 +1276,289 @@ class TranscriptionService:
                 "status": "failed",
                 "error": str(e)
             }
+    async def _transcribe_with_groq_streaming(
+        self, 
+        audio_path: str, 
+        language: str = "auto",
+        context: str = "",
+        chunk_number: int = 1
+    ) -> str:
+        """
+        Enhanced transcription for real-time streaming with context awareness
+        """
+        try:
+            file_size = os.path.getsize(audio_path)
+            logger.info(f"Transcribing streaming chunk {chunk_number}: {file_size/(1024):.1f}KB")
+            
+            # Skip very small files
+            if file_size < 1024:  # Less than 1KB
+                return ""
+            
+            # Ensure file is not too large for streaming
+            if file_size > self.MAX_FILE_SIZE:
+                # Try to compress for streaming
+                compressed_path = await self._compress_audio_for_streaming(audio_path)
+                if os.path.getsize(compressed_path) <= self.MAX_FILE_SIZE:
+                    audio_path = compressed_path
+                else:
+                    logger.warning(f"Streaming chunk too large: {file_size/(1024*1024):.1f}MB")
+                    return ""
+            
+            # Enhanced transcription with streaming optimizations
+            with open(audio_path, "rb") as audio_file:
+                # Build prompt for better context continuity
+                prompt = self._build_streaming_prompt(context, chunk_number)
+                
+                # Use Groq Whisper with streaming-optimized parameters
+                response = self.groq_client.audio.transcriptions.create(
+                    file=audio_file,
+                    model="whisper-large-v3",
+                    language=language if language != "auto" else None,
+                    prompt=prompt,
+                    response_format="text",
+                    temperature=0.1,  # Lower temperature for more consistent results
+                )
+                
+                # Clean and filter the transcription
+                transcription = self._clean_streaming_transcription(
+                    response.strip(), 
+                    context,
+                    chunk_number
+                )
+                
+                if transcription:
+                    logger.info(f"Streaming transcription {chunk_number}: {len(transcription)} chars")
+                
+                return transcription
+                
+        except Exception as e:
+            logger.error(f"Streaming transcription failed for chunk {chunk_number}: {e}")
+            return ""
+
+    def _build_streaming_prompt(self, context: str, chunk_number: int) -> str:
+        """
+        Build context-aware prompt for better transcription continuity
+        """
+        if not context or chunk_number == 1:
+            return "Transcribe the following audio clearly and accurately."
+        
+        # Get last few words from context for continuity
+        context_words = context.split()
+        if len(context_words) > 10:
+            recent_context = " ".join(context_words[-10:])
+            return f"Continue transcribing. Previous context: ...{recent_context}"
+        else:
+            return f"Continue transcribing. Previous: {context}"
+
+    def _clean_streaming_transcription(
+        self, 
+        transcription: str, 
+        context: str, 
+        chunk_number: int
+    ) -> str:
+        """
+        Clean and filter transcription for streaming with duplicate detection
+        """
+        if not transcription:
+            return ""
+        
+        # Remove common transcription artifacts
+        cleaned = transcription.strip()
+        
+        # Remove leading/trailing whitespace and normalize
+        cleaned = re.sub(r'\s+', ' ', cleaned)
+        
+        # Filter out very short or meaningless transcriptions
+        if len(cleaned) < 3:
+            return ""
+        
+        # Filter out common false positives
+        false_positives = [
+            "thank you", "thanks", "bye", "hello", "hi", "um", "uh", "ah",
+            "you know", "like", "so", "well", "yeah", "yes", "no", "okay"
+        ]
+        
+        if cleaned.lower().strip() in false_positives:
+            return ""
+        
+        # Check for repetition with recent context
+        if context and len(context) > 10:
+            # Get last 50 characters of context
+            recent_context = context[-50:].lower()
+            if cleaned.lower() in recent_context:
+                return ""  # Skip if already transcribed recently
+        
+        # Remove obvious repetitions within the same transcription
+        words = cleaned.split()
+        if len(words) > 2:
+            # Check for immediate word repetition (e.g., "the the the")
+            filtered_words = []
+            prev_word = ""
+            repeat_count = 0
+            
+            for word in words:
+                if word.lower() == prev_word.lower():
+                    repeat_count += 1
+                    if repeat_count < 2:  # Allow one repetition
+                        filtered_words.append(word)
+                else:
+                    filtered_words.append(word)
+                    repeat_count = 0
+                    prev_word = word
+            
+            cleaned = " ".join(filtered_words)
+        
+        return cleaned
+
+    async def _compress_audio_for_streaming(self, audio_path: str) -> str:
+        """
+        Compress audio specifically for streaming transcription
+        """
+        try:
+            base_path = os.path.splitext(audio_path)[0]
+            compressed_path = f"{base_path}_stream_compressed.wav"
+            
+            # More aggressive compression for streaming
+            cmd = [
+                "ffmpeg", "-y",
+                "-i", audio_path,
+                "-ar", "8000",  # Lower sample rate for streaming
+                "-ac", "1",     # Mono
+                "-ab", "32k",   # Lower bitrate
+                "-f", "wav",
+                compressed_path
+            ]
+            
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            
+            if result.returncode == 0 and os.path.exists(compressed_path):
+                new_size = os.path.getsize(compressed_path)
+                original_size = os.path.getsize(audio_path)
+                
+                logger.info(f"Compressed streaming audio: {original_size/(1024):.1f}KB → {new_size/(1024):.1f}KB")
+                return compressed_path
+            else:
+                logger.warning("Streaming compression failed, using original")
+                return audio_path
+                
+        except Exception as e:
+            logger.error(f"Streaming compression error: {e}")
+            return audio_path
+
+    async def process_complete_realtime_recording(
+        self, 
+        transcription: Transcription, 
+        audio_file: UploadFile,
+        db: Session
+    ) -> Dict[str, Any]:
+        """
+        Process complete real-time recording with enhanced final transcription
+        """
+        try:
+            # Save audio file
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".webm") as temp_file:
+                content = await audio_file.read()
+                temp_file.write(content)
+                temp_path = temp_file.name
+
+            # Convert to WAV
+            wav_path = await self._convert_to_wav(temp_path)
+            
+            # Get duration
+            duration = await self._get_audio_duration(wav_path)
+            transcription.duration_seconds = int(duration)
+            
+            # Enhanced final transcription (not chunked for better quality)
+            start_time = time.time()
+            final_text = await self._transcribe_with_groq(wav_path, transcription.language)
+            processing_time = time.time() - start_time
+            
+            transcription.transcription_text = final_text
+            transcription.processing_time_seconds = int(processing_time)
+            
+            # Generate summary if requested
+            summary_text = ""
+            if transcription.generate_summary and final_text:
+                try:
+                    summary_text = await self._generate_summary(final_text)
+                    transcription.summary_text = summary_text
+                except Exception as e:
+                    logger.error(f"Summary generation failed: {e}")
+            
+            # Store in knowledge base if requested
+            stored_in_kb = False
+            if transcription.add_to_knowledge_base and final_text:
+                try:
+                    from ..services.knowledge_service import KnowledgeService
+                    knowledge_service = KnowledgeService()
+                    
+                    await knowledge_service.store_transcription(
+                        transcription_id=transcription.id,
+                        title=transcription.title,
+                        content=final_text,
+                        summary=summary_text,
+                        user_id=transcription.user_id
+                    )
+                    stored_in_kb = True
+                except Exception as e:
+                    logger.error(f"Knowledge base storage failed: {e}")
+            
+            # Update transcription status
+            transcription.status = "completed"
+            transcription.completed_at = datetime.utcnow()
+            
+            # Update user usage
+            user = db.query(User).filter(User.id == transcription.user_id).first()
+            if user:
+                user.monthly_usage += 1
+            
+            db.commit()
+            
+            # Clean up temporary files
+            for path in [temp_path, wav_path]:
+                if os.path.exists(path):
+                    os.remove(path)
+            
+            logger.info(f"Real-time recording processed successfully: {transcription.id}")
+            
+            return {
+                "id": transcription.id,
+                "text": final_text,
+                "summary": summary_text,
+                "status": "completed",
+                "stored_in_knowledge_base": stored_in_kb,
+                "duration_seconds": transcription.duration_seconds,
+                "processing_time_seconds": transcription.processing_time_seconds,
+                "title": transcription.title,
+                "created_at": transcription.created_at.isoformat()
+            }
+            
+        except Exception as e:
+            logger.error(f"Real-time recording processing failed: {e}")
+            transcription.status = "failed"
+            transcription.error_message = str(e)
+            db.commit()
+            raise RuntimeError(f"Processing failed: {str(e)}")
+
+    async def _get_audio_duration(self, audio_path: str) -> float:
+        """
+        Get audio duration using ffprobe
+        """
+        try:
+            cmd = [
+                "ffprobe", "-v", "quiet", "-show_entries", "format=duration",
+                "-of", "csv=p=0", audio_path
+            ]
+            
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            
+            if result.returncode == 0:
+                duration = float(result.stdout.strip())
+                return duration
+            else:
+                logger.warning("Could not determine audio duration")
+                return 0.0
+                
+        except Exception as e:
+            logger.error(f"Duration detection failed: {e}")
+            return 0.0
