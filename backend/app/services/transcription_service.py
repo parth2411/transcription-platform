@@ -647,8 +647,47 @@ class TranscriptionService:
             raise RuntimeError("Audio conversion timeout")
 
     async def _transcribe_with_groq(self, audio_path: str, language: str = "auto") -> str:
-        """Enhanced transcribe method that supports chunking"""
-        return await self._transcribe_with_groq_chunked(audio_path, language)
+        """
+        Enhanced Groq transcription with direct WebM support
+        """
+        try:
+            logger.info(f"Transcribing audio: {audio_path}")
+            
+            # Check file size
+            file_size = os.path.getsize(audio_path)
+            if file_size > self.MAX_FILE_SIZE:
+                raise RuntimeError(f"File too large: {file_size/(1024*1024):.1f}MB")
+            
+            # Skip very small files
+            if file_size < 1024:
+                logger.warning("File too small, skipping transcription")
+                return ""
+            
+            # Determine file type
+            file_ext = os.path.splitext(audio_path)[1].lower()
+            logger.info(f"Processing {file_ext} file of size {file_size} bytes")
+            
+            with open(audio_path, "rb") as audio_file:
+                response = self.groq_client.audio.transcriptions.create(
+                    file=audio_file,
+                    model="whisper-large-v3",
+                    language=language if language != "auto" else None,
+                    response_format="text",
+                    temperature=0.0
+                )
+                
+            transcription = response.strip()
+            
+            if transcription:
+                logger.info(f"Transcription successful: {len(transcription)} characters")
+            else:
+                logger.warning("Empty transcription result")
+                
+            return transcription
+            
+        except Exception as e:
+            logger.error(f"Groq transcription failed: {e}")
+            return ""
 
     async def _compress_audio(self, audio_path: str) -> str:
         """Compress audio file to reduce size"""
@@ -712,36 +751,134 @@ class TranscriptionService:
             logger.error(f"Summary generation failed: {e}")
             return "Summary generation failed"
 
-    async def _convert_to_wav(self, input_path: str) -> str:
-        """Convert audio file to WAV format using ffmpeg"""
+    async def _convert_to_wav(self, audio_path: str) -> str:
+        """
+        Enhanced audio conversion with WebM support for real-time chunks
+        """
         try:
-            if input_path.endswith('.wav'):
-                return input_path
+            # Check if input is already WAV
+            if audio_path.lower().endswith('.wav'):
+                return audio_path
+            
+            # Generate output path
+            base_path = os.path.splitext(audio_path)[0]
+            wav_path = f"{base_path}.wav"
+            
+            # Get file size to determine processing approach
+            file_size = os.path.getsize(audio_path)
+            logger.info(f"Converting audio file: {file_size} bytes")
+            
+            # For very small files (< 1KB), skip conversion - likely invalid
+            if file_size < 1024:
+                logger.warning(f"Audio file too small ({file_size} bytes), skipping conversion")
+                raise RuntimeError("Audio file too small to process")
+            
+            # Enhanced FFmpeg command for WebM chunks
+            if audio_path.lower().endswith('.webm'):
+                # Special handling for WebM real-time chunks
+                cmd = [
+                    "ffmpeg", "-y", "-v", "error",  # Suppress verbose output
+                    "-f", "webm",  # Force WebM input format
+                    "-i", audio_path,
+                    "-vn",  # No video
+                    "-ar", "16000",  # 16kHz sample rate
+                    "-ac", "1",  # Mono
+                    "-acodec", "pcm_s16le",  # PCM 16-bit
+                    "-f", "wav",  # Force WAV output
+                    wav_path
+                ]
+            else:
+                # Standard conversion for other formats
+                cmd = [
+                    "ffmpeg", "-y", "-v", "error",
+                    "-i", audio_path,
+                    "-vn",
+                    "-ar", "16000",
+                    "-ac", "1", 
+                    "-acodec", "pcm_s16le",
+                    wav_path
+                ]
+            
+            logger.info(f"Running FFmpeg: {' '.join(cmd)}")
+            
+            # Run conversion with timeout
+            result = subprocess.run(
+                cmd, 
+                capture_output=True, 
+                text=True, 
+                timeout=60,
+                cwd=os.path.dirname(audio_path) if os.path.dirname(audio_path) else None
+            )
+            
+            if result.returncode == 0 and os.path.exists(wav_path):
+                output_size = os.path.getsize(wav_path)
+                logger.info(f"Conversion successful: {file_size} → {output_size} bytes")
+                return wav_path
+            else:
+                # If standard conversion fails, try alternative approach
+                logger.warning(f"Standard conversion failed, trying alternative method")
+                return await self._convert_webm_alternative(audio_path)
                 
-            wav_path = input_path.replace(os.path.splitext(input_path)[1], '.wav')
-            
-            cmd = [
-                "ffmpeg", "-y", "-i", input_path,
-                "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le",
-                wav_path
-            ]
-            
-            result = subprocess.run(cmd, capture_output=True, text=True)
-            
-            if result.returncode != 0:
-                logger.error(f"FFmpeg conversion failed: {result.stderr}")
-                raise RuntimeError(f"Audio conversion failed: {result.stderr}")
-            
-            # Remove original file
-            if os.path.exists(input_path):
-                os.remove(input_path)
-                
-            logger.info(f"Successfully converted audio to WAV: {wav_path}")
-            return wav_path
-            
+        except subprocess.TimeoutExpired:
+            logger.error("FFmpeg conversion timed out")
+            raise RuntimeError("Audio conversion timed out")
         except Exception as e:
             logger.error(f"Audio conversion failed: {e}")
             raise RuntimeError(f"Audio conversion failed: {str(e)}")
+        
+    async def _convert_webm_alternative(self, audio_path: str) -> str:
+        """
+        Alternative WebM conversion method for problematic chunks
+        """
+        try:
+            base_path = os.path.splitext(audio_path)[0]
+            wav_path = f"{base_path}_alt.wav"
+            
+            # Try with different WebM handling
+            cmd = [
+                "ffmpeg", "-y", "-v", "error",
+                "-fflags", "+genpts",  # Generate presentation timestamps
+                "-avoid_negative_ts", "make_zero",  # Handle timing issues
+                "-i", audio_path,
+                "-vn",
+                "-ar", "16000",
+                "-ac", "1",
+                "-c:a", "pcm_s16le",
+                "-f", "wav",
+                wav_path
+            ]
+            
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            
+            if result.returncode == 0 and os.path.exists(wav_path):
+                logger.info("Alternative WebM conversion successful")
+                return wav_path
+            else:
+                # If all conversions fail, try to send WebM directly to Groq
+                logger.warning("All conversions failed, attempting direct WebM transcription")
+                return await self._handle_webm_direct(audio_path)
+                
+        except Exception as e:
+            logger.error(f"Alternative conversion failed: {e}")
+            raise RuntimeError(f"Could not convert audio: {str(e)}")
+    async def _handle_webm_direct(self, audio_path: str) -> str:
+        """
+        Handle WebM files directly without conversion (Groq supports WebM)
+        """
+        try:
+            # Check if Groq can handle the WebM directly
+            file_size = os.path.getsize(audio_path)
+            
+            if file_size > self.MAX_FILE_SIZE:
+                raise RuntimeError(f"WebM file too large: {file_size} bytes")
+            
+            # Return original path for direct Groq processing
+            logger.info("Using WebM file directly for transcription")
+            return audio_path
+            
+        except Exception as e:
+            logger.error(f"Direct WebM handling failed: {e}")
+            raise RuntimeError("Cannot process WebM file")
     
     def _extract_audio_if_needed(self, input_path: str) -> str:
         """Extract audio from video files if needed"""
@@ -1152,130 +1289,7 @@ class TranscriptionService:
             raise
     # Add these debug methods to your TranscriptionService class
 
-    async def debug_qdrant_connection(self, user_id: str) -> Dict:
-        """Debug Qdrant connection and collection status"""
-        try:
-            collection_name = f"user_{user_id}_transcriptions"
-            
-            # Test basic connection
-            collections = self.qdrant_client.get_collections()
-            
-            debug_info = {
-                "connection_status": "connected",
-                "total_collections": len(collections.collections),
-                "target_collection": collection_name,
-                "collection_exists": False,
-                "points_count": 0,
-                "collection_info": None,
-                "embedder_test": None
-            }
-            
-            # Check if target collection exists
-            try:
-                collection_info = self.qdrant_client.get_collection(collection_name)
-                debug_info["collection_exists"] = True
-                debug_info["points_count"] = collection_info.points_count
-                debug_info["collection_info"] = {
-                    "vectors_count": collection_info.vectors_count,
-                    "segments_count": collection_info.segments_count,
-                    "status": collection_info.status
-                }
-            except Exception as e:
-                debug_info["collection_error"] = str(e)
-            
-            # Test embedder
-            try:
-                test_vector = self.embedder.encode("test sentence").tolist()
-                debug_info["embedder_test"] = {
-                    "status": "working",
-                    "vector_size": len(test_vector),
-                    "sample_values": test_vector[:5]
-                }
-            except Exception as e:
-                debug_info["embedder_test"] = {
-                    "status": "failed",
-                    "error": str(e)
-                }
-            
-            return debug_info
-            
-        except Exception as e:
-            return {
-                "connection_status": "failed",
-                "error": str(e),
-                "error_type": type(e).__name__
-            }
-
-    async def test_qdrant_storage(self, user_id: str) -> Dict:
-        """Test storing a simple document in Qdrant"""
-        try:
-            test_text = "This is a test transcription for debugging purposes."
-            test_summary = "Test summary for debugging."
-            
-            logger.info("Starting Qdrant storage test...")
-            
-            point_ids = await self._store_in_qdrant(
-                transcription=test_text,
-                summary=test_summary,
-                user_id=user_id,
-                transcription_id="test-transcription-id",
-                metadata={
-                    "title": "Test Transcription",
-                    "type": "debug_test",
-                    "created_at": datetime.utcnow().isoformat()
-                }
-            )
-            
-            return {
-                "test_status": "success",
-                "points_stored": len(point_ids),
-                "point_ids": point_ids,
-                "message": "Test storage completed successfully"
-            }
-            
-        except Exception as e:
-            logger.error(f"Test storage failed: {e}")
-            return {
-                "test_status": "failed",
-                "error": str(e),
-                "error_type": type(e).__name__
-            }
-
-    async def manual_store_transcription(
-        self, 
-        user_id: str, 
-        transcription_id: str, 
-        transcription_text: str, 
-        summary_text: Optional[str] = None
-    ) -> Dict:
-        """Manually store an existing transcription in Qdrant"""
-        try:
-            logger.info(f"Manually storing transcription {transcription_id} for user {user_id}")
-            
-            point_ids = await self._store_in_qdrant(
-                transcription=transcription_text,
-                summary=summary_text,
-                user_id=user_id,
-                transcription_id=transcription_id,
-                metadata={
-                    "title": f"Manual Store - {transcription_id}",
-                    "type": "manual_storage",
-                    "created_at": datetime.utcnow().isoformat()
-                }
-            )
-            
-            return {
-                "status": "success",
-                "points_stored": len(point_ids),
-                "point_ids": point_ids
-            }
-            
-        except Exception as e:
-            logger.error(f"Manual storage failed: {e}")
-            return {
-                "status": "failed",
-                "error": str(e)
-            }
+    
     async def _transcribe_with_groq_streaming(
         self, 
         audio_path: str, 
@@ -1312,7 +1326,7 @@ class TranscriptionService:
                 # Use Groq Whisper with streaming-optimized parameters
                 response = self.groq_client.audio.transcriptions.create(
                     file=audio_file,
-                    model="whisper-large-v3",
+                    model="whisper-large-v3-turbo",
                     language=language if language != "auto" else None,
                     prompt=prompt,
                     response_format="text",

@@ -390,3 +390,135 @@ class KnowledgeService:
             logger.error(f"Failed to clear knowledge base: {e}")
             db.rollback()
             return False
+    # Add this method to your existing KnowledgeService class
+    # backend/app/services/knowledge_service.py
+
+    async def store_transcription(
+        self,
+        transcription_id: str,
+        title: str,
+        content: str,
+        summary: str = None,
+        user_id: str = None
+    ) -> List[str]:
+        """
+        Store transcription content in the knowledge base
+        """
+        try:
+            if not self.qdrant_available or not self.embedder_available:
+                logger.warning("Qdrant or embedder not available, skipping storage")
+                return []
+            
+            collection_name = f"user_{user_id}_transcriptions"
+            point_ids = []
+            
+            # Ensure collection exists
+            await self._ensure_collection_exists(collection_name)
+            
+            # Split content into chunks for better retrieval
+            content_chunks = self._split_text_into_chunks(content, max_chunk_size=1000)
+            
+            for i, chunk in enumerate(content_chunks):
+                if len(chunk.strip()) < 50:  # Skip very short chunks
+                    continue
+                    
+                # Generate embedding
+                embedding = self.embedder.encode(chunk)
+                
+                # Create point
+                point_id = f"{transcription_id}_chunk_{i}"
+                point_ids.append(point_id)
+                
+                # Create metadata
+                metadata = {
+                    "transcription_id": transcription_id,
+                    "title": title,
+                    "chunk_index": i,
+                    "content_type": "transcription_chunk",
+                    "text_preview": chunk[:200],
+                    "full_text": chunk,
+                    "created_at": datetime.utcnow().isoformat(),
+                    "user_id": user_id
+                }
+                
+                # Store in Qdrant
+                self.qdrant_client.upsert(
+                    collection_name=collection_name,
+                    points=[{
+                        "id": point_id,
+                        "vector": embedding.tolist(),
+                        "payload": metadata
+                    }]
+                )
+            
+            # Store summary if provided
+            if summary and summary.strip():
+                summary_embedding = self.embedder.encode(summary)
+                summary_point_id = f"{transcription_id}_summary"
+                point_ids.append(summary_point_id)
+                
+                summary_metadata = {
+                    "transcription_id": transcription_id,
+                    "title": title,
+                    "content_type": "summary",
+                    "text_preview": summary[:200],
+                    "full_text": summary,
+                    "created_at": datetime.utcnow().isoformat(),
+                    "user_id": user_id
+                }
+                
+                self.qdrant_client.upsert(
+                    collection_name=collection_name,
+                    points=[{
+                        "id": summary_point_id,
+                        "vector": summary_embedding.tolist(),
+                        "payload": summary_metadata
+                    }]
+                )
+            
+            logger.info(f"Stored transcription {transcription_id} as {len(point_ids)} points")
+            return point_ids
+            
+        except Exception as e:
+            logger.error(f"Failed to store transcription {transcription_id}: {e}")
+            return []
+
+    def _split_text_into_chunks(self, text: str, max_chunk_size: int = 1000) -> List[str]:
+        """
+        Split text into chunks for better embedding and retrieval
+        """
+        if len(text) <= max_chunk_size:
+            return [text]
+        
+        chunks = []
+        sentences = text.split('. ')
+        current_chunk = ""
+        
+        for sentence in sentences:
+            if len(current_chunk + sentence + '. ') <= max_chunk_size:
+                current_chunk += sentence + '. '
+            else:
+                if current_chunk:
+                    chunks.append(current_chunk.strip())
+                current_chunk = sentence + '. '
+        
+        if current_chunk:
+            chunks.append(current_chunk.strip())
+        
+        return chunks
+
+    async def _ensure_collection_exists(self, collection_name: str):
+        """
+        Ensure the collection exists, create if it doesn't
+        """
+        try:
+            self.qdrant_client.get_collection(collection_name)
+        except Exception:
+            # Collection doesn't exist, create it
+            from qdrant_client.models import Distance, VectorParams
+            
+            self.qdrant_client.create_collection(
+                collection_name=collection_name,
+                vectors_config=VectorParams(size=384, distance=Distance.COSINE)
+            )
+            logger.info(f"Created collection: {collection_name}")
