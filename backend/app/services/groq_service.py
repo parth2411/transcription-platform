@@ -17,13 +17,17 @@ class GroqTranscriptionService:
         try:
             with open(audio_path, 'rb') as audio_file:
                 # Use the correct Groq API structure
-                transcript = self.client.audio.transcriptions.create(
+                # transcript = self.client.audio.transcriptions.create(
+                #     file=audio_file,
+                #     model="whisper-large-v3",
+                #     language=None if language == "auto" else language,
+                #     response_format="text"
+                # )
+                transcript = self.client.audio.translations.create(
                     file=audio_file,
-                    model="whisper-large-v3",
-                    language=None if language == "auto" else language,
+                    model="whisper-large-v3-turbo",
                     response_format="text"
                 )
-                
                 # Handle response - could be string or object
                 if hasattr(transcript, 'text'):
                     return transcript.text

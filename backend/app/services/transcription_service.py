@@ -376,7 +376,7 @@ class TranscriptionService:
             
         try:
             # Get total duration
-            duration = self._get_audio_duration(audio_path)
+            duration = await self._get_audio_duration(audio_path)
             if duration <= chunk_minutes * 60:
                 return [audio_path]  # No need to split
             
@@ -1096,7 +1096,7 @@ class TranscriptionService:
             audio_path = self._extract_audio_if_needed(file_path)
             
             # Get file duration
-            duration = self._get_audio_duration(audio_path)
+            duration = await self._get_audio_duration(audio_path)
             transcription.duration_seconds = duration
             
             # Enhanced transcription with chunking support
@@ -1182,7 +1182,7 @@ class TranscriptionService:
                 
                 # Update file info
                 transcription.file_size = os.path.getsize(audio_path)
-                transcription.duration_seconds = self._get_audio_duration(audio_path)
+                transcription.duration_seconds = await self._get_audio_duration(audio_path)
                 
                 # Enhanced transcription with chunking support
                 transcription_text = await self._transcribe_with_groq_chunked(audio_path, transcription.language)
