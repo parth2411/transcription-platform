@@ -596,8 +596,6 @@ class TranscriptionService:
         except Exception as e:
             logger.error(f"Audio conversion error: {e}")
             raise RuntimeError(f"Audio conversion failed: {str(e)}")
-
-    # Add this method to handle real-time audio better
     async def _handle_realtime_audio(self, audio_data: bytes, temp_dir: str) -> str:
         """Handle real-time audio data with validation"""
         try:
@@ -627,6 +625,7 @@ class TranscriptionService:
         except Exception as e:
             logger.error(f"Real-time audio handling failed: {e}")
             raise RuntimeError(f"Real-time audio processing failed: {str(e)}")
+
     
     async def _convert_to_wav_detailed(self, input_path: str, output_path: str):
         """Convert audio with detailed error handling"""
@@ -646,47 +645,40 @@ class TranscriptionService:
         except subprocess.TimeoutExpired:
             raise RuntimeError("Audio conversion timeout")
 
-    async def _transcribe_with_groq(self, audio_path: str, language: str = "auto") -> str:
+    async def _transcribe_with_groq(self, audio_path: str, language: str = "auto", timeout: int = 60) -> str:
         """
-        Enhanced Groq transcription with direct WebM support
+        Enhanced transcribe method with timeout support for real-time chunks
         """
         try:
-            logger.info(f"Transcribing audio: {audio_path}")
-            
-            # Check file size
             file_size = os.path.getsize(audio_path)
-            if file_size > self.MAX_FILE_SIZE:
-                raise RuntimeError(f"File too large: {file_size/(1024*1024):.1f}MB")
+            logger.info(f"Transcribing audio: {file_size/(1024):.1f}KB")
             
             # Skip very small files
-            if file_size < 1024:
-                logger.warning("File too small, skipping transcription")
+            if file_size < 1024:  # Less than 1KB
+                logger.info("File too small to transcribe")
                 return ""
             
-            # Determine file type
-            file_ext = os.path.splitext(audio_path)[1].lower()
-            logger.info(f"Processing {file_ext} file of size {file_size} bytes")
+            # Check file size limit
+            if file_size > self.MAX_FILE_SIZE:
+                logger.warning(f"File too large: {file_size/(1024*1024):.1f}MB")
+                return ""
             
+            # Transcribe with timeout
             with open(audio_path, "rb") as audio_file:
                 response = self.groq_client.audio.transcriptions.create(
                     file=audio_file,
-                    model="whisper-large-v3",
+                    model="whisper-large-v3-turbo",
                     language=language if language != "auto" else None,
                     response_format="text",
-                    temperature=0.0
+                    temperature=0.1,
                 )
                 
-            transcription = response.strip()
-            
-            if transcription:
-                logger.info(f"Transcription successful: {len(transcription)} characters")
-            else:
-                logger.warning("Empty transcription result")
+                transcription = response.strip()
+                logger.info(f"Transcription completed: {len(transcription)} chars")
+                return transcription
                 
-            return transcription
-            
         except Exception as e:
-            logger.error(f"Groq transcription failed: {e}")
+            logger.error(f"Transcription failed: {e}")
             return ""
 
     async def _compress_audio(self, audio_path: str) -> str:
@@ -799,15 +791,14 @@ class TranscriptionService:
                     wav_path
                 ]
             
-            logger.info(f"Running FFmpeg: {' '.join(cmd)}")
+            logger.info(f"Running FFmpeg conversion...")
             
             # Run conversion with timeout
             result = subprocess.run(
                 cmd, 
                 capture_output=True, 
                 text=True, 
-                timeout=60,
-                cwd=os.path.dirname(audio_path) if os.path.dirname(audio_path) else None
+                timeout=60
             )
             
             if result.returncode == 0 and os.path.exists(wav_path):
@@ -816,7 +807,7 @@ class TranscriptionService:
                 return wav_path
             else:
                 # If standard conversion fails, try alternative approach
-                logger.warning(f"Standard conversion failed, trying alternative method")
+                logger.warning(f"Standard conversion failed: {result.stderr}")
                 return await self._convert_webm_alternative(audio_path)
                 
         except subprocess.TimeoutExpired:
@@ -825,7 +816,6 @@ class TranscriptionService:
         except Exception as e:
             logger.error(f"Audio conversion failed: {e}")
             raise RuntimeError(f"Audio conversion failed: {str(e)}")
-        
     async def _convert_webm_alternative(self, audio_path: str) -> str:
         """
         Alternative WebM conversion method for problematic chunks
@@ -861,6 +851,7 @@ class TranscriptionService:
         except Exception as e:
             logger.error(f"Alternative conversion failed: {e}")
             raise RuntimeError(f"Could not convert audio: {str(e)}")
+
     async def _handle_webm_direct(self, audio_path: str) -> str:
         """
         Handle WebM files directly without conversion (Groq supports WebM)
@@ -1304,8 +1295,8 @@ class TranscriptionService:
             file_size = os.path.getsize(audio_path)
             logger.info(f"Transcribing streaming chunk {chunk_number}: {file_size/(1024):.1f}KB")
             
-            # Skip very small files
-            if file_size < 1024:  # Less than 1KB
+            # Skip very small files (reduced threshold)
+            if file_size < 2048:  # Less than 2KB
                 return ""
             
             # Ensure file is not too large for streaming
@@ -1348,7 +1339,6 @@ class TranscriptionService:
         except Exception as e:
             logger.error(f"Streaming transcription failed for chunk {chunk_number}: {e}")
             return ""
-
     def _build_streaming_prompt(self, context: str, chunk_number: int) -> str:
         """
         Build context-aware prompt for better transcription continuity
@@ -1362,65 +1352,35 @@ class TranscriptionService:
             recent_context = " ".join(context_words[-10:])
             return f"Continue transcribing. Previous context: ...{recent_context}"
         else:
-            return f"Continue transcribing. Previous: {context}"
-
-    def _clean_streaming_transcription(
-        self, 
-        transcription: str, 
-        context: str, 
-        chunk_number: int
-    ) -> str:
+            return f"Continue transcribing. Previous context: {context}"
+    def _clean_streaming_transcription(self, text: str, context: str, chunk_number: int) -> str:
         """
-        Clean and filter transcription for streaming with duplicate detection
+        Clean and filter transcription for streaming to avoid duplicates
         """
-        if not transcription:
+        if not text or not text.strip():
             return ""
+        
+        cleaned = text.strip()
         
         # Remove common transcription artifacts
-        cleaned = transcription.strip()
-        
-        # Remove leading/trailing whitespace and normalize
-        cleaned = re.sub(r'\s+', ' ', cleaned)
-        
-        # Filter out very short or meaningless transcriptions
-        if len(cleaned) < 3:
-            return ""
-        
-        # Filter out common false positives
-        false_positives = [
-            "thank you", "thanks", "bye", "hello", "hi", "um", "uh", "ah",
-            "you know", "like", "so", "well", "yeah", "yes", "no", "okay"
+        artifacts_to_remove = [
+            "you", "thank you", "thanks", "um", "uh", "hmm",
+            "please subscribe", "like and subscribe", "music playing",
+            "[Music]", "[Applause]", "(Music)", "(Applause)"
         ]
         
-        if cleaned.lower().strip() in false_positives:
+        # Don't return artifact-only transcriptions
+        if cleaned.lower().strip() in artifacts_to_remove:
             return ""
         
-        # Check for repetition with recent context
-        if context and len(context) > 10:
-            # Get last 50 characters of context
-            recent_context = context[-50:].lower()
-            if cleaned.lower() in recent_context:
-                return ""  # Skip if already transcribed recently
+        # Remove artifacts from the text
+        for artifact in artifacts_to_remove:
+            if cleaned.lower() == artifact.lower():
+                return ""
         
-        # Remove obvious repetitions within the same transcription
-        words = cleaned.split()
-        if len(words) > 2:
-            # Check for immediate word repetition (e.g., "the the the")
-            filtered_words = []
-            prev_word = ""
-            repeat_count = 0
-            
-            for word in words:
-                if word.lower() == prev_word.lower():
-                    repeat_count += 1
-                    if repeat_count < 2:  # Allow one repetition
-                        filtered_words.append(word)
-                else:
-                    filtered_words.append(word)
-                    repeat_count = 0
-                    prev_word = word
-            
-            cleaned = " ".join(filtered_words)
+        # Avoid returning very short, likely erroneous transcriptions
+        if len(cleaned.split()) < 2 and chunk_number > 1:
+            return ""
         
         return cleaned
 
@@ -1436,9 +1396,9 @@ class TranscriptionService:
             cmd = [
                 "ffmpeg", "-y",
                 "-i", audio_path,
-                "-ar", "8000",  # Lower sample rate for streaming
-                "-ac", "1",     # Mono
-                "-ab", "32k",   # Lower bitrate
+                "-ar", "16000",  # 16kHz sample rate for speech
+                "-ac", "1",      # Mono
+                "-ab", "32k",    # Lower bitrate
                 "-f", "wav",
                 compressed_path
             ]
@@ -1469,6 +1429,8 @@ class TranscriptionService:
         Process complete real-time recording with enhanced final transcription
         """
         try:
+            start_time = time.time()
+            
             # Save audio file
             with tempfile.NamedTemporaryFile(delete=False, suffix=".webm") as temp_file:
                 content = await audio_file.read()
@@ -1480,46 +1442,44 @@ class TranscriptionService:
             
             # Get duration
             duration = await self._get_audio_duration(wav_path)
-            transcription.duration_seconds = int(duration)
+            transcription.duration_seconds = duration
             
-            # Enhanced final transcription (not chunked for better quality)
-            start_time = time.time()
-            final_text = await self._transcribe_with_groq(wav_path, transcription.language)
-            processing_time = time.time() - start_time
-            
+            # Transcribe the complete audio (better quality than chunks)
+            final_text = await self._transcribe_with_groq_chunked(wav_path)
             transcription.transcription_text = final_text
-            transcription.processing_time_seconds = int(processing_time)
             
             # Generate summary if requested
             summary_text = ""
             if transcription.generate_summary and final_text:
-                try:
-                    summary_text = await self._generate_summary(final_text)
-                    transcription.summary_text = summary_text
-                except Exception as e:
-                    logger.error(f"Summary generation failed: {e}")
+                summary_text = await self._generate_summary(final_text)
+                transcription.summary_text = summary_text
             
             # Store in knowledge base if requested
             stored_in_kb = False
             if transcription.add_to_knowledge_base and final_text:
                 try:
-                    from ..services.knowledge_service import KnowledgeService
-                    knowledge_service = KnowledgeService()
-                    
-                    await knowledge_service.store_transcription(
-                        transcription_id=transcription.id,
-                        title=transcription.title,
-                        content=final_text,
-                        summary=summary_text,
-                        user_id=transcription.user_id
+                    point_ids = await self._store_in_qdrant(
+                        final_text,
+                        summary_text,
+                        str(transcription.user_id),
+                        str(transcription.id),
+                        {
+                            "title": transcription.title,
+                            "created_at": transcription.created_at.isoformat(),
+                            "type": "realtime_recording",
+                            "duration_seconds": duration
+                        }
                     )
+                    transcription.qdrant_point_ids = point_ids
+                    transcription.qdrant_collection = f"user_{transcription.user_id}_transcriptions"
                     stored_in_kb = True
                 except Exception as e:
                     logger.error(f"Knowledge base storage failed: {e}")
             
-            # Update transcription status
+            # Update transcription record
             transcription.status = "completed"
             transcription.completed_at = datetime.utcnow()
+            transcription.processing_time_seconds = time.time() - start_time
             
             # Update user usage
             user = db.query(User).filter(User.id == transcription.user_id).first()
@@ -1556,7 +1516,7 @@ class TranscriptionService:
 
     async def _get_audio_duration(self, audio_path: str) -> float:
         """
-        Get audio duration using ffprobe
+        Get audio duration using ffprobe with better error handling
         """
         try:
             cmd = [

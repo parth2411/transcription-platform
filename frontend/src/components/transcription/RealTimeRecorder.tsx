@@ -141,7 +141,7 @@ export function RealTimeRecorder({ onTranscriptionComplete }: RealTimeRecorderPr
       }
 
       // Start recording
-      mediaRecorderRef.current.start(2000) // Collect data every second
+      mediaRecorderRef.current.start(1000) // Collect data every second
       setIsRecording(true)
       setRecordingTime(0)
 
@@ -151,26 +151,14 @@ export function RealTimeRecorder({ onTranscriptionComplete }: RealTimeRecorderPr
       }, 1000)
 
       // Process chunks for real-time transcription every 5 seconds
-      // chunkIntervalRef.current = setInterval(async () => {
-      //   if (audioChunksRef.current.length > 0) {
-      //     const recentChunks = audioChunksRef.current.slice(-5) // Last 5 seconds
-      //     const chunkBlob = new Blob(recentChunks, { type: 'audio/webm' })
-      //     await processRealTimeChunk(chunkBlob)
-      //   }
-      // }, 1500)
       chunkIntervalRef.current = setInterval(async () => {
-        if (audioChunksRef.current.length >= 3) { // At least 6 seconds of data
-          const combinedChunks = audioChunksRef.current.slice(-4) // Last 8 seconds
-          const chunkBlob = new Blob(combinedChunks, { type: 'audio/webm' })
-          
-          // Only process if chunk is large enough
-          if (chunkBlob.size >= 20000) { // At least 20KB
-            await processRealTimeChunk(chunkBlob)
-            // Keep last chunk for overlap
-            audioChunksRef.current = audioChunksRef.current.slice(-1)
-          }
+        if (audioChunksRef.current.length > 0) {
+          const recentChunks = audioChunksRef.current.slice(-5) // Last 5 seconds
+          const chunkBlob = new Blob(recentChunks, { type: 'audio/webm' })
+          await processRealTimeChunk(chunkBlob)
         }
-      }, 4000) // Every 4 seconds
+      }, 5000)
+
     } catch (err: any) {
       setError(`Microphone access denied: ${err.message}`)
     }
@@ -203,20 +191,8 @@ export function RealTimeRecorder({ onTranscriptionComplete }: RealTimeRecorderPr
 
   const processRealTimeChunk = async (audioBlob: Blob) => {
     try {
-    // Skip tiny chunks
-      if (audioBlob.size < 20000) { // Less than 20KB
-        console.log('Chunk too small:', audioBlob.size, 'bytes')
-        return
-      }
-
-      console.log('Processing chunk:', audioBlob.size, 'bytes')
-      
       const formData = new FormData()
-      formData.append('audio', audioBlob, `chunk-${Date.now()}.webm`)
-      
-      // Add debugging info
-      formData.append('chunk_size', audioBlob.size.toString())
-      formData.append('timestamp', Date.now().toString())
+      formData.append('audio', audioBlob, 'chunk.webm')
 
       const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/transcriptions/realtime-chunk`, {
         method: 'POST',
@@ -228,11 +204,9 @@ export function RealTimeRecorder({ onTranscriptionComplete }: RealTimeRecorderPr
 
       if (response.ok) {
         const result = await response.json()
-        if (result.text && result.text.trim()) {
-          setRealTimeText(prev => prev + ' ' + result.text.trim())
+        if (result.text) {
+          setRealTimeText(prev => prev + ' ' + result.text)
         }
-      } else {
-        console.error('Chunk processing failed:', await response.text())
       }
     } catch (error) {
       console.error('Real-time transcription failed:', error)
@@ -590,9 +564,6 @@ export function RealTimeRecorder({ onTranscriptionComplete }: RealTimeRecorderPr
     </Card>
   )
 }
-
-
-
 
 
 
