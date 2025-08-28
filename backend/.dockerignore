@@ -1,0 +1,58 @@
+# .dockerignore - Add this to your backend/ directory
+
+# Python cache and virtual environments
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+.venv/
+venv/
+.env/
+env/
+
+# Development files
+.git/
+.gitignore
+README.md
+*.md
+.pytest_cache/
+.coverage
+.tox/
+
+# Environment files (Railway will inject these)
+.env*
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+*.log
+logs/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+tmp/
+temp/
+uploads/
+alembic/versions/*.py
+
+# Docker files
+Dockerfile*
+docker-compose*
+.dockerignore
+
+# Test files
+tests/
+test_*
