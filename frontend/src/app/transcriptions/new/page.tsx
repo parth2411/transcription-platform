@@ -384,7 +384,7 @@ export default function NewTranscriptionPage() {
             {activeTab === 'realtime' && (
               <div className="space-y-6">
                 <RealTimeRecorder
-                  onTranscriptionComplete={(text, audioBlob) => {
+                  onTranscriptionComplete={(result) => {
                     // Set the transcription in form
                     if (!form.title) {
                       setForm(prev => ({ 
@@ -392,13 +392,14 @@ export default function NewTranscriptionPage() {
                         title: `Live Recording ${new Date().toLocaleString()}`
                       }))
                     }
-                    
+
                     // You can process the completed transcription here
                     setSuccess('Live recording completed! Transcription ready.')
-                    
+
                     // Optionally save to backend
-                    if (form.add_to_knowledge_base && text) {
+                    if (form.add_to_knowledge_base && result.text) {
                       // Save to knowledge base
+                      setText(result.text)
                       processText()
                     }
                   }}
