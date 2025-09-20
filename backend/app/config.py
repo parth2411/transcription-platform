@@ -65,6 +65,29 @@ class Settings(BaseSettings):
     BUSINESS_TIER_LIMIT: int = -1              # unlimited
     BUSINESS_TIER_DURATION_LIMIT: int = 120    # 120 minutes max per video
     
+    ENABLE_SPEAKER_DIARIZATION: bool = os.getenv("ENABLE_SPEAKER_DIARIZATION", "false").lower() == "true"
+    MAX_RECORDING_DURATION: int = int(os.getenv("MAX_RECORDING_DURATION", "7200"))
+    REAL_TIME_CHUNK_INTERVAL: int = int(os.getenv("REAL_TIME_CHUNK_INTERVAL", "3"))
+    
+    # Payment settings
+    STRIPE_SECRET_KEY: str = os.getenv("STRIPE_SECRET_KEY", "")
+    STRIPE_PUBLISHABLE_KEY: str = os.getenv("STRIPE_PUBLISHABLE_KEY", "")
+    STRIPE_WEBHOOK_SECRET: str = os.getenv("STRIPE_WEBHOOK_SECRET", "")
+    
+    # Email settings
+    SMTP_HOST: str = os.getenv("SMTP_HOST", "smtp.gmail.com")
+    SMTP_PORT: int = int(os.getenv("SMTP_PORT", "587"))
+    SMTP_USERNAME: str = os.getenv("SMTP_USERNAME", "")
+    SMTP_PASSWORD: str = os.getenv("SMTP_PASSWORD", "")
+    FROM_EMAIL: str = os.getenv("FROM_EMAIL", "noreply@yourdomain.com")
+    
+    # Frontend URL for email links
+    FRONTEND_URL: str = os.getenv("FRONTEND_URL", "http://localhost:3000")
+    
+    # Usage limits by tier
+    FREE_TIER_LIMIT: int = 60  # minutes per month
+    PRO_TIER_LIMIT: int = 600  # 10 hours per month
+    
     class Config:
         env_file = ".env"
 
