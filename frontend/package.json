@@ -31,7 +31,8 @@
         "react-dropzone": "^14.3.8",
         "react-query": "^3.39.3",
         "tailwind-merge": "^2.6.0",
-        "zustand": "^4.5.7"
+        "zustand": "^4.5.7",
+        "react-use-websocket": "^4.5.0"
     },
     "devDependencies": {
         "@types/node": "^20",
