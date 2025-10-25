@@ -22,26 +22,39 @@ from fastapi import UploadFile
 from ..config import settings
 from ..models import Transcription, User
 from .file_service import FileService
+from .rate_limiter import get_groq_rate_limiter
+from .diarization_service import get_diarization_service
 
 logger = logging.getLogger(__name__)
 
-# Replace the __init__ method in your TranscriptionService class with this:
 
 class TranscriptionService:
     def __init__(self):
         # Fix tokenizers warning
         os.environ["TOKENIZERS_PARALLELISM"] = "false"
-        
-        # Initialize Groq client
+
+        # Initialize Groq client with rate limiting
         try:
             self.groq_client = Groq(api_key=settings.GROQ_API_KEY)
-            logger.info("✅ Groq client initialized")
+            self.rate_limiter = get_groq_rate_limiter()
+            logger.info("✅ Groq client initialized with rate limiting")
             self.groq_available = True
         except Exception as e:
             logger.error(f"❌ Groq initialization failed: {e}")
             self.groq_client = None
             self.groq_available = False
-        
+
+        # Initialize diarization service
+        try:
+            self.diarization_service = get_diarization_service()
+            if self.diarization_service.enabled:
+                logger.info("✅ Diarization service enabled")
+            else:
+                logger.info("ℹ️ Diarization service disabled")
+        except Exception as e:
+            logger.error(f"❌ Diarization initialization failed: {e}")
+            self.diarization_service = None
+
         # Initialize Qdrant client with proper error handling
         try:
             self.qdrant_client = QdrantClient(
@@ -58,7 +71,7 @@ class TranscriptionService:
             logger.error(f"❌ Qdrant initialization failed: {e}")
             self.qdrant_client = None
             self.qdrant_available = False
-        
+
         # Initialize embedder
         try:
             self.embedder = SentenceTransformer('all-MiniLM-L6-v2')
@@ -68,10 +81,10 @@ class TranscriptionService:
             logger.error(f"❌ Embedder initialization failed: {e}")
             self.embedder = None
             self.embedder_available = False
-        
+
         # Initialize file service
         self.file_service = FileService()
-        
+
         # Enhanced limits and settings for large video support
         self.MAX_FILE_SIZE = 24 * 1024 * 1024  # 24MB (safely under Groq's 25MB limit)
         self.CHUNK_SIZE_MINUTES = 8  # Process in 8-minute chunks
@@ -133,6 +146,9 @@ class TranscriptionService:
                 "--dump-json",
                 "--no-download",
                 "--no-playlist",
+                # Bot protection bypass
+                "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "--extractor-args", "youtube:player_client=android", "--extractor-retries", "5",
                 str(url)
             ]
             
@@ -293,7 +309,7 @@ class TranscriptionService:
             
             output_template = os.path.join(output_dir, "downloaded_audio.%(ext)s")
             
-            # Enhanced yt-dlp command with better compression for large videos
+            # Enhanced yt-dlp command with bot protection bypass
             cmd = [
                 "yt-dlp",
                 "--extract-audio",
@@ -303,6 +319,13 @@ class TranscriptionService:
                 "--prefer-free-formats",
                 "--format", "bestaudio[filesize<50M]/bestaudio/best[filesize<50M]",  # Prefer smaller files
                 "--max-filesize", "50M",  # Hard limit on source file size
+                # Bot protection bypass
+                "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "--add-header", "Accept:text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "--add-header", "Accept-Language:en-us,en;q=0.5",
+                "--add-header", "Sec-Fetch-Mode:navigate",
+                "--extractor-args", "youtube:player_client=android", "--extractor-retries", "5",
+                "--retries", "3",
                 "-o", output_template,
                 str(url)
             ]
@@ -318,6 +341,12 @@ class TranscriptionService:
                     raise RuntimeError("This URL is not supported. Please try a different link.")
                 elif "Video unavailable" in result.stderr:
                     raise RuntimeError("Video is unavailable or private. Please check the URL.")
+                elif "Sign in to confirm" in result.stderr or "bot" in result.stderr.lower():
+                    raise RuntimeError(
+                        "YouTube is blocking this video due to bot protection. "
+                        "Please try a different video or wait a few minutes and try again. "
+                        "Some videos with strict protection cannot be downloaded."
+                    )
                 else:
                     raise RuntimeError(f"Download failed: {result.stderr}")
             
@@ -376,7 +405,7 @@ class TranscriptionService:
             
         try:
             # Get total duration
-            duration = self._get_audio_duration(audio_path)
+            duration = await self._get_audio_duration(audio_path)
             if duration <= chunk_minutes * 60:
                 return [audio_path]  # No need to split
             
@@ -467,10 +496,10 @@ class TranscriptionService:
             raise RuntimeError(f"Transcription failed: {str(e)}")
 
     async def _transcribe_single_file(self, audio_path: str, language: str = "auto") -> str:
-        """Transcribe a single audio file"""
+        """Transcribe a single audio file with rate limiting"""
         try:
             file_size = os.path.getsize(audio_path)
-            
+
             # Final check for file size
             if file_size > self.MAX_FILE_SIZE:
                 # Try to compress further
@@ -479,25 +508,31 @@ class TranscriptionService:
                     audio_path = compressed_path
                 else:
                     raise RuntimeError(f"File still too large after compression: {file_size/(1024*1024):.1f}MB")
-            
-            with open(audio_path, 'rb') as audio_file:
-                response = self.groq_client.audio.transcriptions.create(
-                    file=audio_file,
-                    model="whisper-large-v3-turbo",
-                    language=None if language == "auto" else language,
-                    response_format="text"
-                )
-                
-                if hasattr(response, 'text'):
-                    transcription = response.text
-                else:
-                    transcription = str(response)
-                    
-                if not transcription or transcription.strip() == "":
-                    raise RuntimeError("Empty transcription received")
-                    
-                return transcription
-                
+
+            async def _do_transcription():
+                """Inner function for actual API call"""
+                with open(audio_path, 'rb') as audio_file:
+                    response = self.groq_client.audio.transcriptions.create(
+                        file=audio_file,
+                        model="whisper-large-v3",
+                        language=None if language == "auto" else language,
+                        response_format="text"
+                    )
+
+                    if hasattr(response, 'text'):
+                        transcription = response.text
+                    else:
+                        transcription = str(response)
+
+                    if not transcription or transcription.strip() == "":
+                        raise RuntimeError("Empty transcription received")
+
+                    return transcription
+
+            # Execute with rate limiting
+            result = await self.rate_limiter.execute_with_retry(_do_transcription)
+            return result
+
         except Exception as e:
             logger.error(f"Single file transcription failed: {e}")
             raise RuntimeError(f"Transcription failed: {str(e)}")
@@ -648,43 +683,50 @@ class TranscriptionService:
 
     async def _transcribe_with_groq(self, audio_path: str, language: str = "auto") -> str:
         """
-        Enhanced Groq transcription with direct WebM support
+        Enhanced Groq transcription with English translation
+        Always translates to English regardless of source language
         """
         try:
             logger.info(f"Transcribing audio: {audio_path}")
-            
+
             # Check file size
             file_size = os.path.getsize(audio_path)
             if file_size > self.MAX_FILE_SIZE:
                 raise RuntimeError(f"File too large: {file_size/(1024*1024):.1f}MB")
-            
+
             # Skip very small files
             if file_size < 1024:
                 logger.warning("File too small, skipping transcription")
                 return ""
-            
+
             # Determine file type
             file_ext = os.path.splitext(audio_path)[1].lower()
             logger.info(f"Processing {file_ext} file of size {file_size} bytes")
-            
-            with open(audio_path, "rb") as audio_file:
-                response = self.groq_client.audio.transcriptions.create(
-                    file=audio_file,
-                    model="whisper-large-v3",
-                    language=language if language != "auto" else None,
-                    response_format="text",
-                    temperature=0.0
-                )
-                
-            transcription = response.strip()
-            
-            if transcription:
-                logger.info(f"Transcription successful: {len(transcription)} characters")
-            else:
-                logger.warning("Empty transcription result")
-                
-            return transcription
-            
+
+            async def _do_transcription():
+                with open(audio_path, "rb") as audio_file:
+                    # Use translations endpoint to ALWAYS get English output
+                    # This automatically translates any language to English
+                    response = self.groq_client.audio.translations.create(
+                        file=audio_file,
+                        model="whisper-large-v3",
+                        response_format="text",
+                        temperature=0.0,
+                        prompt="Translate and transcribe the following audio to clear English."
+                    )
+
+                transcription = response.strip() if isinstance(response, str) else (response.text.strip() if hasattr(response, 'text') else str(response))
+
+                if transcription:
+                    logger.info(f"English transcription successful: {len(transcription)} characters")
+                else:
+                    logger.warning("Empty transcription result")
+
+                return transcription
+
+            # Execute with rate limiting
+            return await self.rate_limiter.execute_with_retry(_do_transcription)
+
         except Exception as e:
             logger.error(f"Groq transcription failed: {e}")
             return ""
@@ -714,39 +756,67 @@ class TranscriptionService:
             return audio_path
 
     async def _generate_summary(self, text: str) -> str:
-        """Generate summary using Groq"""
+        """Generate summary using Groq with rate limiting"""
         try:
             # Don't generate summary for very short texts
             if len(text.split()) < 50:
                 return "Text too short for meaningful summary."
-            
-            prompt = f"""
-            Generate a comprehensive summary of the following transcription organized into clear sections.
-            Use markdown formatting with headers (##) for main sections and bullet points for key details.
-            
-            Transcription:
-            {text}
-            
-            Please provide the summary with sections like:
-            ## Overview
-            ## Key Discussion Points  
-            ## Important Decisions/Actions
-            ## Conclusion
-            
-            Keep it concise but comprehensive.
-            """
-            
-            response = self.groq_client.chat.completions.create(
-                model="llama-3.1-8b-instant",
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=8000,
-                temperature=0.3
-            )
-            
-            summary = response.choices[0].message.content
+
+            async def _do_summary():
+                """Inner function for actual API call"""
+                prompt = f"""You are an expert at creating clear, concise, and actionable summaries of transcribed conversations.
+
+Please analyze the following transcription and create a well-structured summary in markdown format.
+
+**TRANSCRIPTION:**
+{text}
+
+**INSTRUCTIONS:**
+1. Create clear section headers using ## markdown syntax
+2. Use bullet points for key information
+3. Extract main topics, decisions, and action items
+4. Identify speakers' key points (if multiple speakers)
+5. Highlight any important dates, numbers, or deadlines
+6. Keep language professional and clear
+
+**REQUIRED SECTIONS:**
+## 📋 Overview
+Brief 2-3 sentence summary of the entire conversation
+
+## 💡 Key Points
+- Main topics discussed (bullet points)
+- Important insights or revelations
+
+## ✅ Decisions Made
+- Any decisions, agreements, or conclusions reached
+
+## 📌 Action Items
+- Tasks to be completed
+- Responsibilities assigned
+- Deadlines mentioned
+
+## 🔍 Additional Notes
+- Any other relevant information
+
+Keep the summary concise yet comprehensive. Focus on what matters most."""
+
+                response = self.groq_client.chat.completions.create(
+                    model="llama-3.1-8b-instant",
+                    messages=[
+                        {"role": "system", "content": "You are a professional transcription analyst who creates clear, actionable summaries."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    max_tokens=8000,
+                    temperature=0.2
+                )
+
+                return response.choices[0].message.content
+
+            # Execute with rate limiting
+            summary = await self.rate_limiter.execute_with_retry(_do_summary)
             logger.info("Summary generated successfully")
             return summary
-            
+
         except Exception as e:
             logger.error(f"Summary generation failed: {e}")
             return "Summary generation failed"
@@ -1083,32 +1153,29 @@ class TranscriptionService:
             logger.info(f"Starting transcription processing for {transcription.id}")
             start_time = time.time()
             
-            # Generate auto title if not provided
-            if not transcription.title or transcription.title.strip() == "":
-                transcription.title = self.generate_auto_title(file_name=file_path)
-                logger.info(f"Auto-generated title: {transcription.title}")
-            
             # Update status to processing
             transcription.status = "processing"
             db.commit()
-            
+
             # Extract audio if needed
             audio_path = self._extract_audio_if_needed(file_path)
-            
+
             # Get file duration
-            duration = self._get_audio_duration(audio_path)
+            duration = await self._get_audio_duration(audio_path)
             transcription.duration_seconds = duration
-            
+
             # Enhanced transcription with chunking support
             transcription_text = await self._transcribe_with_groq_chunked(audio_path, transcription.language)
             transcription.transcription_text = transcription_text
-            
-            # Update title with transcription content if still generic
-            if "Transcription -" in transcription.title:
-                smart_title = self.generate_auto_title(transcription_text, file_path)
-                if smart_title and smart_title != transcription.title:
-                    transcription.title = smart_title
-                    logger.info(f"Updated title from transcription: {transcription.title}")
+
+            # Generate smart AI-powered title from content (or use timestamp fallback)
+            if not transcription.title or transcription.title.strip() == "":
+                file_name_fallback = self.generate_auto_title(file_name=file_path)
+                transcription.title = await self._generate_smart_title(
+                    transcription_text,
+                    fallback=file_name_fallback
+                )
+                logger.info(f"Generated smart title: {transcription.title}")
             
             # Generate summary if requested
             if transcription.generate_summary and transcription_text:
@@ -1174,19 +1241,23 @@ class TranscriptionService:
             temp_dir = tempfile.mkdtemp()
             try:
                 audio_path, video_info = await self._download_audio_from_url(url, temp_dir)
-                
-                # Use video title if user didn't provide one or provided generic title
-                if not transcription.title or transcription.title.strip() == "" or "Transcription -" in transcription.title:
-                    transcription.title = video_info.get('title', self.generate_auto_title())
-                    logger.info(f"Using extracted title: {transcription.title}")
-                
+
                 # Update file info
                 transcription.file_size = os.path.getsize(audio_path)
-                transcription.duration_seconds = self._get_audio_duration(audio_path)
-                
+                transcription.duration_seconds = await self._get_audio_duration(audio_path)
+
                 # Enhanced transcription with chunking support
                 transcription_text = await self._transcribe_with_groq_chunked(audio_path, transcription.language)
                 transcription.transcription_text = transcription_text
+
+                # Generate smart title from content (fallback to video title or timestamp)
+                if not transcription.title or transcription.title.strip() == "":
+                    video_title_fallback = video_info.get('title', self.generate_auto_title())
+                    transcription.title = await self._generate_smart_title(
+                        transcription_text,
+                        fallback=video_title_fallback
+                    )
+                    logger.info(f"Generated smart title: {transcription.title}")
                 
                 # Generate summary if requested
                 if transcription.generate_summary and transcription_text:
@@ -1244,15 +1315,15 @@ class TranscriptionService:
         """
         try:
             logger.info(f"Starting text processing for {transcription.id}")
-            
-            # Generate auto title if not provided
-            if not transcription.title or transcription.title.strip() == "":
-                transcription.title = self.generate_auto_title(text)
-                logger.info(f"Auto-generated title: {transcription.title}")
-            
+
             transcription.status = "processing"
             transcription.transcription_text = text
             db.commit()
+
+            # Generate smart AI-powered title from content (or use timestamp fallback)
+            if not transcription.title or transcription.title.strip() == "":
+                transcription.title = await self._generate_smart_title(text)
+                logger.info(f"Generated smart title: {transcription.title}")
             
             # Generate summary
             if transcription.generate_summary:
@@ -1326,7 +1397,7 @@ class TranscriptionService:
                 # Use Groq Whisper with streaming-optimized parameters
                 response = self.groq_client.audio.transcriptions.create(
                     file=audio_file,
-                    model="whisper-large-v3-turbo",
+                    model="whisper-large-v3",
                     language=language if language != "auto" else None,
                     prompt=prompt,
                     response_format="text",
@@ -1486,9 +1557,17 @@ class TranscriptionService:
             start_time = time.time()
             final_text = await self._transcribe_with_groq(wav_path, transcription.language)
             processing_time = time.time() - start_time
-            
+
             transcription.transcription_text = final_text
             transcription.processing_time_seconds = int(processing_time)
+
+            # Generate smart AI-powered title from content (or use timestamp fallback)
+            if not transcription.title or transcription.title.strip() == "" or transcription.title == "Real-time Recording":
+                transcription.title = await self._generate_smart_title(
+                    final_text,
+                    fallback=f"Recording - {datetime.now().strftime('%b %d, %Y at %I:%M %p')}"
+                )
+                logger.info(f"Generated smart title for real-time recording: {transcription.title}")
             
             # Generate summary if requested
             summary_text = ""
@@ -1576,3 +1655,123 @@ class TranscriptionService:
         except Exception as e:
             logger.error(f"Duration detection failed: {e}")
             return 0.0
+    async def _transcribe_live_chunk(self, audio_path: str) -> str:
+        """
+        Transcribe live audio chunks (for real-time recording)
+        Uses transcriptions API (faster, works with small WebM files)
+        Returns text in original language - translation happens on final complete
+        """
+        try:
+            logger.info(f"Transcribing live chunk: {audio_path}")
+
+            # Check file size
+            file_size = os.path.getsize(audio_path)
+
+            # Skip very small files (less than 10KB)
+            if file_size < 10240:
+                logger.warning(f"Chunk too small ({file_size} bytes), skipping")
+                return ""
+
+            # Determine file type
+            file_ext = os.path.splitext(audio_path)[1].lower()
+            logger.info(f"Processing live {file_ext} chunk of size {file_size} bytes")
+
+            async def _do_transcription():
+                with open(audio_path, "rb") as audio_file:
+                    # Use transcriptions API for live chunks (works better with WebM)
+                    response = self.groq_client.audio.transcriptions.create(
+                        file=audio_file,
+                        model="whisper-large-v3-turbo",  # Turbo for speed
+                        response_format="text",
+                        temperature=0.0,
+                        language="en"  # Hint that we expect English, but accepts any language
+                    )
+
+                transcription = response.strip() if isinstance(response, str) else (response.text.strip() if hasattr(response, 'text') else str(response))
+
+                if transcription:
+                    logger.info(f"Live chunk transcribed: {len(transcription)} characters")
+                else:
+                    logger.debug("Empty transcription from chunk")
+
+                return transcription
+
+            # Execute with rate limiting
+            return await self.rate_limiter.execute_with_retry(_do_transcription)
+
+        except Exception as e:
+            logger.error(f"Live chunk transcription failed: {e}")
+            return ""  # Return empty string, don't fail the whole stream
+
+    async def _generate_smart_title(self, text: str, fallback: str = None) -> str:
+        """
+        Generate a smart, concise title from transcription content using AI
+        Falls back to timestamp-based title if AI fails
+        
+        Args:
+            text: Transcription text to analyze
+            fallback: Optional fallback title
+            
+        Returns:
+            Generated title (max 100 characters)
+        """
+        try:
+            # If text is too short, use timestamp
+            if len(text.split()) < 10:
+                return fallback or f"Transcription - {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+            
+            # Use first 500 words for title generation (faster)
+            sample_text = " ".join(text.split()[:500])
+            
+            async def _do_title_generation():
+                """Inner function for AI title generation"""
+                prompt = f"""Generate a short, descriptive title (maximum 10 words) for this transcription.
+
+The title should:
+- Be clear and specific about the content
+- Be concise (under 10 words)
+- Use title case
+- NOT include quotes or special characters
+- Focus on the main topic or theme
+
+Transcription excerpt:
+{sample_text}
+
+Respond with ONLY the title, nothing else."""
+
+                response = self.groq_client.chat.completions.create(
+                    model="llama-3.1-8b-instant",
+                    messages=[
+                        {"role": "system", "content": "You are a title generator. Generate short, clear titles."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    max_tokens=50,
+                    temperature=0.3
+                )
+                
+                title = response.choices[0].message.content.strip()
+                
+                # Clean up the title
+                title = title.strip('"\'')  # Remove quotes
+                title = ' '.join(title.split())  # Normalize whitespace
+                
+                # Limit length
+                if len(title) > 100:
+                    title = title[:97] + "..."
+                
+                return title
+            
+            # Execute with rate limiting
+            title = await self.rate_limiter.execute_with_retry(_do_title_generation)
+            
+            # Validate title
+            if title and len(title) > 5 and len(title) < 150:
+                logger.info(f"Generated smart title: {title}")
+                return title
+            else:
+                raise ValueError("Generated title is invalid")
+                
+        except Exception as e:
+            logger.warning(f"Smart title generation failed: {e}, using fallback")
+            # Fallback to timestamp-based title
+            return fallback or f"Transcription - {datetime.now().strftime('%b %d, %Y at %I:%M %p')}"

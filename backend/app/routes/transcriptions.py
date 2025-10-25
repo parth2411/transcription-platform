@@ -1180,8 +1180,6 @@ def _bulk_export_zip(transcriptions: List[Transcription], content_type: str) -> 
         media_type="application/zip",
         headers={"Content-Disposition": f"attachment; filename=bulk_export_{content_type}.zip"}
     )
-# Add these debug routes to your existing routes/transcriptions.py file
-# Insert these at the end of the file, before any existing routes
 
 @router.get("/debug/qdrant")
 async def debug_qdrant_status(

@@ -12,8 +12,23 @@ frontend/.next/
 out/
 
 # Environment files
-backend/.env*
-frontend/.env.local*
-.env*
+.env
+.env.*
+backend/.env
+backend/.env.*
+frontend/.env.local
+frontend/.env.local.*
+!.env.example
+
 # OS files
 .DS_Store
+*.DS_Store
+
+# Backup files
+*.backup
+*.bak
+*.old
+
+# Upload directories (don't commit user uploads)
+backend/uploads/*
+!backend/uploads/.gitkeep

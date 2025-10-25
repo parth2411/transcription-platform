@@ -421,12 +421,12 @@ class KnowledgeService:
             for i, chunk in enumerate(content_chunks):
                 if len(chunk.strip()) < 50:  # Skip very short chunks
                     continue
-                    
+
                 # Generate embedding
                 embedding = self.embedder.encode(chunk)
-                
-                # Create point
-                point_id = f"{transcription_id}_chunk_{i}"
+
+                # Create a proper UUID for the point (Qdrant requires UUID or int, not string)
+                point_id = str(uuid.uuid4())
                 point_ids.append(point_id)
                 
                 # Create metadata
@@ -454,7 +454,8 @@ class KnowledgeService:
             # Store summary if provided
             if summary and summary.strip():
                 summary_embedding = self.embedder.encode(summary)
-                summary_point_id = f"{transcription_id}_summary"
+                # Generate proper UUID for summary point
+                summary_point_id = str(uuid.uuid4())
                 point_ids.append(summary_point_id)
                 
                 summary_metadata = {
@@ -513,12 +514,21 @@ class KnowledgeService:
         """
         try:
             self.qdrant_client.get_collection(collection_name)
-        except Exception:
-            # Collection doesn't exist, create it
-            from qdrant_client.models import Distance, VectorParams
-            
-            self.qdrant_client.create_collection(
-                collection_name=collection_name,
-                vectors_config=VectorParams(size=384, distance=Distance.COSINE)
-            )
-            logger.info(f"Created collection: {collection_name}")
+            logger.info(f"Collection already exists: {collection_name}")
+        except Exception as e:
+            # Collection doesn't exist, try to create it
+            try:
+                from qdrant_client.models import Distance, VectorParams
+
+                self.qdrant_client.create_collection(
+                    collection_name=collection_name,
+                    vectors_config=VectorParams(size=384, distance=Distance.COSINE)
+                )
+                logger.info(f"✅ Created collection: {collection_name}")
+            except Exception as create_error:
+                # Handle race condition where collection was created by another request
+                if "already exists" in str(create_error).lower():
+                    logger.info(f"Collection already exists (race condition): {collection_name}")
+                else:
+                    logger.error(f"Failed to create collection: {create_error}")
+                    raise

@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
+env/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+*.cover
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Upload directories (don't include user uploads in image)
+uploads/*
+!uploads/.gitkeep
+
+# Temporary files
+*.log
+*.tmp
+*.backup
+*.bak
+
+# Database
+*.db
+*.sqlite
+
+# Documentation
+*.md
+!README.md
+
+# Git
+.git/
+.gitignore

@@ -42,7 +42,9 @@ class Transcription(Base):
     # Content
     transcription_text = Column(Text)
     summary_text = Column(Text)
-    
+    diarization_data = Column(Text)  # JSON string with speaker segments
+    speaker_count = Column(Integer)  # Number of detected speakers
+
     # Processing
     status = Column(String(50), default="pending")  # pending, processing, completed, failed
     language = Column(String(10), default="auto")

@@ -60,11 +60,22 @@ class Settings(BaseSettings):
     # Enhanced Subscription Limits
     FREE_TIER_LIMIT: int = 5                    # transcriptions per month
     FREE_TIER_DURATION_LIMIT: int = 10         # 10 minutes max per video
-    PRO_TIER_LIMIT: int = 100                  # transcriptions per month  
+    PRO_TIER_LIMIT: int = 100                  # transcriptions per month
     PRO_TIER_DURATION_LIMIT: int = 60          # 60 minutes max per video
     BUSINESS_TIER_LIMIT: int = -1              # unlimited
     BUSINESS_TIER_DURATION_LIMIT: int = 120    # 120 minutes max per video
-    
+
+    # Rate Limiting for Groq API (Free Tier Protection)
+    GROQ_RATE_LIMIT_RPM: int = 25              # Requests per minute (Groq free: 30, we use 25 for safety)
+    GROQ_RATE_LIMIT_RPD: int = 10000           # Requests per day (Groq free: 14,400, we use 10k for safety)
+    GROQ_RATE_LIMIT_ENABLED: bool = True       # Enable/disable rate limiting
+
+    # Speaker Diarization Settings
+    HUGGINGFACE_TOKEN: str = ""                # Required for pyannote.audio
+    DIARIZATION_ENABLED: bool = False          # Enable/disable speaker diarization
+    MIN_SPEAKERS: int = 1                      # Minimum number of speakers
+    MAX_SPEAKERS: int = 10                     # Maximum number of speakers
+
     class Config:
         env_file = ".env"
 
