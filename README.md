@@ -402,7 +402,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Changelog
 
-### v1.0.0 (2025-01-24)
+### v1.0.0 (2025-10-24)
 - ✨ Initial release
 - ✨ Rate limiting implementation
 - ✨ Speaker diarization support
