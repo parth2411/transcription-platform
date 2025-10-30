@@ -33,5 +33,4 @@ frontend/.env.local.*
 backend/uploads/*
 !backend/uploads/.gitkeep
 
-backend/scripts/import_vectors_fixed.py
 qdrant_export.json
