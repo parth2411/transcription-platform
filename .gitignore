@@ -33,6 +33,6 @@ frontend/.env.local.*
 backend/uploads/*
 !backend/uploads/.gitkeep
 BACKEND_UPDATED.md
-backend/migrations/*
+
 backend/scripts/*
 qdrant_export.json
