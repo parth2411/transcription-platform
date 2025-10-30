@@ -70,12 +70,12 @@ def check_usage_limits(user: User, db: Session):
     """Check if user has exceeded usage limits"""
     if user.subscription_tier == "business":
         return  # Unlimited for business tier
-    if user.subscription_tier == "free" and user.monthly_usage >= settings.FREE_TIER_LIMIT:
+    if user.subscription_tier == "free" and user.monthly_transcription_count >= settings.FREE_TIER_LIMIT:
         raise HTTPException(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
             detail=f"Monthly limit exceeded. Upgrade to Pro for more transcriptions."
         )
-    elif user.subscription_tier == "pro" and user.monthly_usage >= settings.PRO_TIER_LIMIT:
+    elif user.subscription_tier == "pro" and user.monthly_transcription_count >= settings.PRO_TIER_LIMIT:
         raise HTTPException(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
             detail=f"Monthly limit exceeded. Contact support for higher limits."
@@ -83,7 +83,7 @@ def check_usage_limits(user: User, db: Session):
 
 def increment_usage(user: User, db: Session):
     """Increment user's monthly usage counter"""
-    user.monthly_usage += 1
+    user.monthly_transcription_count += 1
     db.commit()
 
 # Enhanced background processing for routes/transcriptions.py

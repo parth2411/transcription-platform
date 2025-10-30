@@ -46,8 +46,7 @@ class KnowledgeStatsResponse(BaseModel):
     total_duration_hours: float
     collection_name: str
 
-# Initialize service
-knowledge_service = KnowledgeService()
+# Note: KnowledgeService is now instantiated per-request with db session
 
 @router.post("/query", response_model=QueryResponse)
 async def query_knowledge_base(
@@ -70,9 +69,9 @@ async def query_knowledge_base(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Query too long. Maximum 1000 characters."
             )
-        
+
+        knowledge_service = KnowledgeService(db)
         result = await knowledge_service.query_knowledge_base(
-            db=db,
             user=current_user,
             query=query_request.query,
             limit=query_request.limit
@@ -106,9 +105,9 @@ async def get_query_history(
     """
     try:
         offset = (page - 1) * per_page
-        
+
+        knowledge_service = KnowledgeService(db)
         queries = await knowledge_service.get_query_history(
-            db=db,
             user=current_user,
             limit=per_page,
             offset=offset
@@ -156,7 +155,8 @@ async def clear_query_history(
     Clear all query history for the user
     """
     try:
-        success = await knowledge_service.delete_query_history(db, current_user)
+        knowledge_service = KnowledgeService(db)
+        success = await knowledge_service.delete_query_history(current_user)
         
         if success:
             return {"message": "Query history cleared successfully"}
@@ -184,7 +184,8 @@ async def get_knowledge_base_stats(
     Get statistics about user's knowledge base
     """
     try:
-        stats = await knowledge_service.get_knowledge_base_stats(db, current_user)
+        knowledge_service = KnowledgeService(db)
+        stats = await knowledge_service.get_knowledge_base_stats(current_user)
         
         return KnowledgeStatsResponse(
             transcription_count=stats["transcription_count"],
@@ -210,7 +211,8 @@ async def clear_knowledge_base(
     Clear entire knowledge base (vectors and query history)
     """
     try:
-        success = await knowledge_service.clear_knowledge_base(db, current_user)
+        knowledge_service = KnowledgeService(db)
+        success = await knowledge_service.clear_knowledge_base(current_user)
         
         if success:
             return {"message": "Knowledge base cleared successfully"}
@@ -237,71 +239,40 @@ async def search_transcriptions(
     db: Session = Depends(get_db)
 ):
     """
-    Search transcriptions without generating an AI answer
+    Search transcriptions without generating an AI answer (using pgvector)
     """
     try:
-        from qdrant_client import QdrantClient
-        from sentence_transformers import SentenceTransformer
-        from ..config import settings
-        
-        qdrant_client = QdrantClient(
-            url=settings.QDRANT_URL,
-            api_key=settings.QDRANT_API_KEY,
-            timeout=60,
-            prefer_grpc=False  # This fixes the pydantic validation errors
+        knowledge_service = KnowledgeService(db)
+
+        # Use the knowledge service to search
+        search_results = await knowledge_service.search_vectors(
+            user=current_user,
+            query=q,
+            limit=limit
         )
-        embedder = SentenceTransformer('all-MiniLM-L6-v2')
-        
-        collection_name = f"user_{current_user.id}_transcriptions"
-        
-        # Check if collection exists
-        try:
-            qdrant_client.get_collection(collection_name)
-        except:
-            return {"results": [], "total": 0}
-        
-        # Create query vector
-        query_vector = embedder.encode(q).tolist()
-        
-        # Search
-        search_results = qdrant_client.search(
-            collection_name=collection_name,
-            query_vector=query_vector,
-            limit=limit,
-            score_threshold=0.6
-        )
-        
+
         results = []
         for result in search_results:
-            # Get transcription details
-            transcription_id = result.payload.get('transcription_id')
-            if transcription_id:
-                from ..models import Transcription
-                transcription = db.query(Transcription).filter(
-                    Transcription.id == transcription_id
-                ).first()
-                
-                if transcription:
-                    results.append({
-                        "transcription_id": str(transcription.id),
-                        "title": transcription.title,
-                        "text_snippet": result.payload["text"][:200] + "..." if len(result.payload["text"]) > 200 else result.payload["text"],
-                        "type": result.payload.get("type", "transcription"),
-                        "confidence": result.score,
-                        "created_at": transcription.created_at.isoformat()
-                    })
-        
+            results.append({
+                "transcription_id": str(result["transcription_id"]),
+                "title": result.get("title", "Untitled"),
+                "text_snippet": result["text"][:200] + "..." if len(result["text"]) > 200 else result["text"],
+                "type": result.get("type", "chunk"),
+                "confidence": result["similarity"],
+                "created_at": result.get("created_at", "")
+            })
+
         return {
             "results": results,
             "total": len(results),
             "query": q
         }
-        
+
     except Exception as e:
         logger.error(f"Search failed: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Search failed"
+            detail=f"Search failed: {str(e)}"
         )
     # Add these debug endpoints to your backend/app/routes/knowledge.py file
 # Add at the end of the file before any existing routes

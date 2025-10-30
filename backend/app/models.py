@@ -3,6 +3,7 @@ from sqlalchemy import Column, String, Integer, Text, DateTime, Boolean, ARRAY, 
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.ext.declarative import declarative_base
+from pgvector.sqlalchemy import Vector
 import uuid
 from datetime import datetime
 
@@ -19,7 +20,7 @@ class User(Base):
     subscription_tier = Column(String(50), default="free")
     is_active = Column(Boolean, default=True)
     is_verified = Column(Boolean, default=False)
-    monthly_usage = Column(Integer, default=0)
+    monthly_transcription_count = Column(Integer, default=0)  # Updated to match Supabase schema
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
@@ -33,8 +34,8 @@ class Transcription(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     title = Column(String(255), nullable=False)
-    original_filename = Column(String(255))
-    file_url = Column(String(500))
+    original_filename = Column("filename", String(255))  # Maps to 'filename' column in Supabase
+    file_url = Column(Text)  # Changed to Text to match Supabase
     file_type = Column(String(50))
     file_size = Column(Integer)  # in bytes
     duration_seconds = Column(Integer)
@@ -50,9 +51,8 @@ class Transcription(Base):
     language = Column(String(10), default="auto")
     confidence_score = Column(Float)
     
-    # Vector storage
-    qdrant_point_ids = Column(ARRAY(String))
-    qdrant_collection = Column(String(255))
+    # Vector storage (pgvector - replaces Qdrant)
+    embedding = Column(Vector(384), nullable=True)
     
     # Settings
     generate_summary = Column(Boolean, default=True)
@@ -60,7 +60,7 @@ class Transcription(Base):
     add_to_knowledge_base = Column(Boolean, default=True)
     
     # Metadata
-    processing_time_seconds = Column(Integer)
+    processing_time_seconds = Column(Float)  # Changed to Float to match Supabase DOUBLE PRECISION
     error_message = Column(Text)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -68,6 +68,24 @@ class Transcription(Base):
     
     # Relationships
     user = relationship("User", back_populates="transcriptions")
+    chunks = relationship("TranscriptionChunk", back_populates="transcription", cascade="all, delete-orphan")
+
+class TranscriptionChunk(Base):
+    """
+    Stores text chunks with embeddings for long transcriptions.
+    Enables granular semantic search across transcription segments.
+    """
+    __tablename__ = "transcription_chunks"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    transcription_id = Column(UUID(as_uuid=True), ForeignKey("transcriptions.id", ondelete="CASCADE"), nullable=False)
+    chunk_index = Column(Integer, nullable=False)
+    text = Column(Text, nullable=False)
+    embedding = Column(Vector(384), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    # Relationships
+    transcription = relationship("Transcription", back_populates="chunks")
 
 class KnowledgeQuery(Base):
     __tablename__ = "knowledge_queries"

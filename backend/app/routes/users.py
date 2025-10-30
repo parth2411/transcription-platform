@@ -90,7 +90,7 @@ async def get_user_stats(
             completed_transcriptions=completed_transcriptions,
             total_duration_hours=round(total_duration / 3600, 2),
             total_queries=total_queries,
-            monthly_usage=current_user.monthly_usage,
+            monthly_usage=current_user.monthly_transcription_count,
             subscription_tier=current_user.subscription_tier,
             usage_limit=usage_limit,
             storage_used_mb=round(total_file_size / 1024 / 1024, 2)
@@ -195,7 +195,7 @@ async def reset_monthly_usage(
     Reset monthly usage counter (admin function or scheduled task)
     """
     try:
-        current_user.monthly_usage = 0
+        current_user.monthly_transcription_count = 0
         db.commit()
         
         logger.info(f"Monthly usage reset for user {current_user.id}")
@@ -237,7 +237,7 @@ async def export_user_data(
                 "last_name": current_user.last_name,
                 "subscription_tier": current_user.subscription_tier,
                 "created_at": current_user.created_at.isoformat(),
-                "monthly_usage": current_user.monthly_usage
+                "monthly_usage": current_user.monthly_transcription_count
             },
             "transcriptions": [
                 {

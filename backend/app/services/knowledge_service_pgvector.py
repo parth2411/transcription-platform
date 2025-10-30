@@ -12,9 +12,7 @@ from sqlalchemy import text, func
 from sentence_transformers import SentenceTransformer
 import os
 from groq import Groq
-from ..config import settings
-import logging
-logger = logging.getLogger(__name__)
+
 from app.models import KnowledgeQuery, Transcription, TranscriptionChunk
 
 class KnowledgeService:
@@ -27,16 +25,7 @@ class KnowledgeService:
         self.db = db
         # Use same embedding model as before (384 dimensions)
         self.model = SentenceTransformer('all-MiniLM-L6-v2')
-
-        # Initialize Groq client if API key is available
-        try:
-            self.groq_client = Groq(api_key=settings.GROQ_API_KEY)
-            logger.info("✅ Groq client initialized with rate limiting")
-            self.groq_available = True
-        except Exception as e:
-            logger.error(f"❌ Groq initialization failed: {e}")
-            self.groq_client = None
-            self.groq_available = False
+        self.groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
     async def query_knowledge_base(
         self,
@@ -470,10 +459,6 @@ User question: {query}
 Please provide a comprehensive answer based on the context above. If the context doesn't contain enough information, say so clearly."""
 
         try:
-            # Check if Groq client is available
-            if not self.groq_client:
-                return "AI answer generation is unavailable. Please set GROQ_API_KEY environment variable."
-
             response = self.groq_client.chat.completions.create(
                 model="llama-3.1-8b-instant",
                 messages=[

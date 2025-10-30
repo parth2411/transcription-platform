@@ -7,8 +7,6 @@ import json
 import math
 from typing import Optional, List, Tuple, Dict, Any
 from groq import Groq
-from qdrant_client import QdrantClient
-from qdrant_client.http.models import Filter
 from sentence_transformers import SentenceTransformer
 from sqlalchemy.orm import Session
 from datetime import datetime
@@ -55,22 +53,9 @@ class TranscriptionService:
             logger.error(f"❌ Diarization initialization failed: {e}")
             self.diarization_service = None
 
-        # Initialize Qdrant client with proper error handling
-        try:
-            self.qdrant_client = QdrantClient(
-                url=settings.QDRANT_URL,
-                api_key=settings.QDRANT_API_KEY,
-                timeout=60,
-                prefer_grpc=False  # This fixes the pydantic validation errors
-            )
-            # Test connection
-            collections = self.qdrant_client.get_collections()
-            logger.info(f"✅ Qdrant connected: {len(collections.collections)} collections")
-            self.qdrant_available = True
-        except Exception as e:
-            logger.error(f"❌ Qdrant initialization failed: {e}")
-            self.qdrant_client = None
-            self.qdrant_available = False
+        # Vector database now uses pgvector through KnowledgeService
+        logger.info("ℹ️ Using Supabase pgvector for embeddings (via KnowledgeService)")
+        self.qdrant_available = False  # Kept for backward compatibility checks
 
         # Initialize embedder
         try:
@@ -1002,142 +987,55 @@ Keep the summary concise yet comprehensive. Focus on what matters most."""
             logger.error(f"Failed to get audio duration: {e}")
             return 0
     
-    # Fixed _store_in_qdrant method with proper collection handling
-
-    async def _store_in_qdrant(
-        self, 
-        transcription: str, 
+    async def _store_in_knowledge_base(
+        self,
+        db: Session,
+        transcription: str,
         summary: str = None,
         user_id: str = None,
-        transcription_id: str = None, 
+        transcription_id: str = None,
         metadata: Dict = None
-    ) -> List[str]:
-        """Store transcription and summary in Qdrant vector database"""
-        
-        if not self.qdrant_available or not self.embedder_available:
-            logger.warning("Qdrant or embedder not available, skipping vector storage")
-            return []
-        
+    ) -> bool:
+        """Store transcription and summary in pgvector knowledge base"""
+
+        if not self.embedder_available:
+            logger.warning("Embedder not available, skipping vector storage")
+            return False
+
         try:
-            collection_name = f"user_{user_id}_transcriptions"
-            point_ids = []
-            
-            # Check/create collection with better error handling
-            try:
-                collection_info = self.qdrant_client.get_collection(collection_name)
-                collection_exists = True
-                logger.info(f"Collection exists: {collection_name} with {collection_info.points_count} points")
-            except Exception as e:
-                logger.error(f"Error checking collection existence: {e}")
-                collection_exists = False
-            
-            # Create collection if it doesn't exist
-            if not collection_exists:
-                try:
-                    from qdrant_client.http.models import VectorParams, Distance
-                    
-                    self.qdrant_client.create_collection(
-                        collection_name=collection_name,
-                        vectors_config=VectorParams(size=384, distance=Distance.COSINE)
-                    )
-                    logger.info(f"Successfully created Qdrant collection: {collection_name}")
-                except Exception as create_error:
-                    if "already exists" in str(create_error).lower():
-                        logger.info(f"Collection already exists (race condition): {collection_name}")
-                    else:
-                        logger.error(f"Failed to create collection: {create_error}")
-                        return []
-            
-            # Store transcription
-            if transcription and transcription.strip():
-                try:
-                    transcription_vector = self.embedder.encode(transcription).tolist()
-                    transcription_point_id = str(uuid.uuid4())
-                    
-                    transcription_metadata = {
-                        "user_id": user_id,
-                        "transcription_id": transcription_id,
-                        "created_at": datetime.utcnow().isoformat(),
-                        "content_type": "transcription",
-                        "text_preview": transcription[:500],
-                        "full_text": transcription,
-                        "content_length": len(transcription)
-                    }
-                    
-                    if metadata:
-                        transcription_metadata.update(metadata)
-                    
-                    self.qdrant_client.upsert(
-                        collection_name=collection_name,
-                        points=[{
-                            "id": transcription_point_id,
-                            "vector": transcription_vector,
-                            "payload": transcription_metadata
-                        }]
-                    )
-                    
-                    point_ids.append(transcription_point_id)
-                    logger.info(f"Stored transcription vector: {transcription_point_id}")
-                    
-                except Exception as e:
-                    logger.error(f"Failed to store transcription: {e}")
-            
-            # Store summary if provided
-            if summary and summary.strip():
-                try:
-                    summary_vector = self.embedder.encode(summary).tolist()
-                    summary_point_id = str(uuid.uuid4())
-                    
-                    summary_metadata = {
-                        "user_id": user_id,
-                        "transcription_id": transcription_id,
-                        "created_at": datetime.utcnow().isoformat(),
-                        "content_type": "summary",
-                        "text_preview": summary[:500],
-                        "full_text": summary,
-                        "content_length": len(summary)
-                    }
-                    
-                    if metadata:
-                        summary_metadata.update(metadata)
-                    
-                    self.qdrant_client.upsert(
-                        collection_name=collection_name,
-                        points=[{
-                            "id": summary_point_id,
-                            "vector": summary_vector,
-                            "payload": summary_metadata
-                        }]
-                    )
-                    
-                    point_ids.append(summary_point_id)
-                    logger.info(f"Stored summary vector: {summary_point_id}")
-                    
-                except Exception as e:
-                    logger.error(f"Failed to store summary: {e}")
-            
-            logger.info(f"Successfully stored {len(point_ids)} vectors in Qdrant")
-            return point_ids
-            
-        except Exception as e:
-            logger.error(f"Failed to store in Qdrant: {e}")
-            return []
-    
-    async def delete_from_qdrant(self, user_id: str, point_ids: List[str]) -> bool:
-        """Delete points from Qdrant collection"""
-        try:
-            collection_name = f"user_{user_id}_transcriptions"
-            
-            self.qdrant_client.delete(
-                collection_name=collection_name,
-                points_selector=point_ids
+            from .knowledge_service import KnowledgeService
+
+            knowledge_service = KnowledgeService(db)
+
+            # Store the transcription with chunks
+            await knowledge_service.store_transcription_with_chunks(
+                transcription_id=transcription_id,
+                user_id=user_id,
+                transcription_text=transcription,
+                summary_text=summary,
+                title=metadata.get('title') if metadata else None
             )
-            
-            logger.info(f"Deleted {len(point_ids)} points from Qdrant")
+
+            logger.info(f"Successfully stored transcription in pgvector knowledge base")
             return True
-            
+
         except Exception as e:
-            logger.error(f"Failed to delete from Qdrant: {e}")
+            logger.error(f"Failed to store in knowledge base: {e}")
+            return False
+
+    async def delete_from_knowledge_base(self, db: Session, transcription_id: str) -> bool:
+        """Delete transcription from pgvector knowledge base"""
+        try:
+            from .knowledge_service import KnowledgeService
+
+            knowledge_service = KnowledgeService(db)
+            await knowledge_service.delete_transcription(transcription_id)
+
+            logger.info(f"Deleted transcription {transcription_id} from knowledge base")
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to delete from knowledge base: {e}")
             return False
     
     async def process_file_transcription(
@@ -1182,22 +1080,21 @@ Keep the summary concise yet comprehensive. Focus on what matters most."""
                 summary = await self._generate_summary(transcription_text)
                 transcription.summary_text = summary
             
-            # Store in vector database if requested
+            # Store in knowledge base if requested
             if transcription.add_to_knowledge_base and transcription_text:
-                point_ids = await self._store_in_qdrant(
-                    transcription_text, 
-                    transcription.summary_text,
-                    str(transcription.user_id),
-                    str(transcription.id),
-                    {
+                await self._store_in_knowledge_base(
+                    db=db,
+                    transcription=transcription_text,
+                    summary=transcription.summary_text,
+                    user_id=str(transcription.user_id),
+                    transcription_id=str(transcription.id),
+                    metadata={
                         "title": transcription.title,
                         "created_at": transcription.created_at.isoformat(),
                         "type": "file_upload",
                         "duration_seconds": duration
                     }
                 )
-                transcription.qdrant_point_ids = point_ids
-                transcription.qdrant_collection = f"user_{transcription.user_id}_transcriptions"
             
             # Clean up temporary files
             if audio_path != file_path:
@@ -1266,12 +1163,13 @@ Keep the summary concise yet comprehensive. Focus on what matters most."""
                 
                 # Store in knowledge base if requested
                 if transcription.add_to_knowledge_base and transcription_text:
-                    point_ids = await self._store_in_qdrant(
-                        transcription_text,
-                        transcription.summary_text,
-                        str(transcription.user_id),
-                        str(transcription.id),
-                        {
+                    await self._store_in_knowledge_base(
+                        db=db,
+                        transcription=transcription_text,
+                        summary=transcription.summary_text,
+                        user_id=str(transcription.user_id),
+                        transcription_id=str(transcription.id),
+                        metadata={
                             "title": transcription.title,
                             "created_at": transcription.created_at.isoformat(),
                             "type": "url_download",
@@ -1280,8 +1178,6 @@ Keep the summary concise yet comprehensive. Focus on what matters most."""
                             "duration_seconds": transcription.duration_seconds
                         }
                     )
-                    transcription.qdrant_point_ids = point_ids
-                    transcription.qdrant_collection = f"user_{transcription.user_id}_transcriptions"
                 
                 # Mark as completed
                 transcription.status = "completed"
@@ -1332,19 +1228,18 @@ Keep the summary concise yet comprehensive. Focus on what matters most."""
             
             # Store in knowledge base
             if transcription.add_to_knowledge_base:
-                point_ids = await self._store_in_qdrant(
-                    text,
-                    transcription.summary_text,
-                    str(transcription.user_id),
-                    str(transcription.id),
-                    {
+                await self._store_in_knowledge_base(
+                    db=db,
+                    transcription=text,
+                    summary=transcription.summary_text,
+                    user_id=str(transcription.user_id),
+                    transcription_id=str(transcription.id),
+                    metadata={
                         "title": transcription.title,
                         "created_at": transcription.created_at.isoformat(),
                         "type": "text_input"
                     }
                 )
-                transcription.qdrant_point_ids = point_ids
-                transcription.qdrant_collection = f"user_{transcription.user_id}_transcriptions"
             
             transcription.status = "completed"
             transcription.completed_at = datetime.utcnow()
@@ -1603,7 +1498,7 @@ Keep the summary concise yet comprehensive. Focus on what matters most."""
             # Update user usage
             user = db.query(User).filter(User.id == transcription.user_id).first()
             if user:
-                user.monthly_usage += 1
+                user.monthly_transcription_count += 1
             
             db.commit()
             

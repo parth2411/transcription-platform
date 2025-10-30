@@ -1,37 +1,44 @@
 # backend/app/config.py - Enhanced for Large Video Support
 from pydantic_settings import BaseSettings
-from typing import List
+from typing import List, Union
+from pydantic import field_validator
 import os
 
 class Settings(BaseSettings):
     # Database
     DATABASE_URL: str = "postgresql://user:password@localhost/transcription_db"
-    
+
     # Security
     SECRET_KEY: str = "your-secret-key-change-in-production"
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
-    
+
     # External APIs
     GROQ_API_KEY: str
-    QDRANT_URL: str
-    QDRANT_API_KEY: str
-    
+
+    # Supabase (replaces Qdrant)
+    SUPABASE_URL: str = ""
+    SUPABASE_ANON_KEY: str = ""
+    SUPABASE_SERVICE_ROLE_KEY: str = ""
+
     # File Storage
     AWS_ACCESS_KEY_ID: str = ""
     AWS_SECRET_ACCESS_KEY: str = ""
     AWS_BUCKET_NAME: str = ""
     AWS_REGION: str = "us-east-1"
-    
+
     # Redis (for background tasks)
     REDIS_URL: str = "redis://localhost:6379"
-    
-    # CORS
-    ALLOWED_ORIGINS: List[str] = [
-        "http://localhost:3000",
-        "http://localhost:8080",
-        "https://your-frontend-domain.com"
-    ]
+
+    # CORS - Can be comma-separated string or list
+    ALLOWED_ORIGINS: Union[str, List[str]] = "http://localhost:3000,http://localhost:8080"
+
+    @field_validator('ALLOWED_ORIGINS', mode='before')
+    @classmethod
+    def parse_origins(cls, v):
+        if isinstance(v, str):
+            return [origin.strip() for origin in v.split(',')]
+        return v
     
     # Enhanced App Settings for Large Videos
     MAX_FILE_SIZE: int = 100 * 1024 * 1024  # 100MB for uploads
@@ -77,6 +84,31 @@ class Settings(BaseSettings):
     MAX_SPEAKERS: int = 10                     # Maximum number of speakers
 
     class Config:
+        # Look for .env in multiple locations:
+        # 1. backend/.env
+        # 2. root .env (../.env)
         env_file = ".env"
+        env_file_encoding = "utf-8"
+        extra = "ignore"  # Ignore extra fields from .env
 
-settings = Settings()
+# Try to load from parent directory if local .env doesn't exist
+import os
+from pathlib import Path
+
+env_paths = [
+    Path("backend/.env"),  # If running from root
+    Path(".env"),           # If running from backend
+    Path("../.env"),        # Parent directory
+]
+
+# Find the first existing .env file
+env_file_path = None
+for path in env_paths:
+    if path.exists():
+        env_file_path = path
+        break
+
+if env_file_path:
+    settings = Settings(_env_file=str(env_file_path))
+else:
+    settings = Settings()

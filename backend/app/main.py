@@ -21,7 +21,7 @@ Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
     title="Transcription Platform API",
-    description="AI-powered transcription and knowledge base platform",
+    description="AI-powered transcription and knowledge base platform with Supabase + pgvector",
     version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc"
@@ -66,8 +66,16 @@ async def root():
         "message": "Transcription Platform API",
         "version": "1.0.0",
         "status": "running",
-        "docs": "/docs"
+        "database": "Supabase PostgreSQL + pgvector",
+        "docs": "/docs",
+        "documentation": "/document"
     }
+
+@app.get("/document")
+async def document_redirect():
+    """Redirect to API documentation"""
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url="/docs")
 
 @app.get("/health")
 async def health_check():

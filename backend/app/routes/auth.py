@@ -184,7 +184,7 @@ async def get_current_user_info(current_user: User = Depends(get_current_user)):
         "last_name": current_user.last_name,
         "subscription_tier": current_user.subscription_tier,
         "is_active": current_user.is_active,
-        "monthly_usage": current_user.monthly_usage,
+        "monthly_usage": current_user.monthly_transcription_count,
         "created_at": current_user.created_at.isoformat()
     }
 
@@ -217,7 +217,7 @@ async def update_current_user(
             "last_name": current_user.last_name,
             "subscription_tier": current_user.subscription_tier,
             "is_active": current_user.is_active,
-            "monthly_usage": current_user.monthly_usage,
+            "monthly_usage": current_user.monthly_transcription_count,
             "created_at": current_user.created_at.isoformat()
         }
         
