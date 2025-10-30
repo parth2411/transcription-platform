@@ -32,7 +32,6 @@ frontend/.env.local.*
 # Upload directories (don't commit user uploads)
 backend/uploads/*
 !backend/uploads/.gitkeep
-BACKEND_UPDATED.md
 
 backend/scripts/*
 qdrant_export.json
