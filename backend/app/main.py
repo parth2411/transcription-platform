@@ -7,7 +7,7 @@ import os
 
 from .config import settings
 from .database import engine, Base, get_db
-from .routes import auth, transcriptions, knowledge, users, realtime
+from .routes import auth, transcriptions, knowledge, users, realtime, analytics, folders
 
 # Configure logging
 logging.basicConfig(
@@ -51,6 +51,8 @@ app.include_router(knowledge.router, prefix="/api/knowledge", tags=["Knowledge B
 app.include_router(users.router, prefix="/api/users", tags=["Users"])
 # Real-time routes are under /api/transcriptions for consistency with frontend
 app.include_router(realtime.router, prefix="/api/transcriptions", tags=["Real-time"])
+app.include_router(analytics.router, prefix="/api/analytics", tags=["Analytics"])
+app.include_router(folders.router, prefix="/api", tags=["Folders & Tags"])
 
 # Create uploads directory
 os.makedirs("uploads", exist_ok=True)
@@ -82,8 +84,9 @@ async def health_check():
     """Health check endpoint"""
     try:
         # Test database connection
+        from sqlalchemy import text
         db = next(get_db())
-        db.execute("SELECT 1")
+        db.execute(text("SELECT 1"))
         db.close()
 
         return {

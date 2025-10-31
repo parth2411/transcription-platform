@@ -55,6 +55,9 @@ class TranscriptionResponse(BaseModel):
     completed_at: Optional[str]
     processing_time_seconds: Optional[int]
     error_message: Optional[str]
+    is_favorite: Optional[bool] = False
+    folder_id: Optional[str] = None
+    tags: Optional[list] = []
 
 class TranscriptionList(BaseModel):
     transcriptions: List[TranscriptionResponse]
@@ -807,7 +810,10 @@ async def list_transcriptions(
                 created_at=t.created_at.isoformat(),
                 completed_at=t.completed_at.isoformat() if t.completed_at else None,
                 processing_time_seconds=t.processing_time_seconds,
-                error_message=t.error_message
+                error_message=t.error_message,
+                is_favorite=t.is_favorite if hasattr(t, 'is_favorite') else False,
+                folder_id=str(t.folder_id) if t.folder_id else None,
+                tags=[]  # TODO: Load tags from junction table
             ))
         
         return TranscriptionList(
@@ -1598,3 +1604,43 @@ async def fix_existing_transcriptions(
             "error": str(e),
             "error_type": type(e).__name__
         }
+
+class TranscriptionUpdate(BaseModel):
+    is_favorite: Optional[bool] = None
+    folder_id: Optional[str] = None
+
+@router.patch("/{transcription_id}")
+async def update_transcription(
+    transcription_id: str,
+    update: TranscriptionUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Update transcription properties (favorite, folder)"""
+    try:
+        transcription = db.query(Transcription).filter(
+            Transcription.id == transcription_id,
+            Transcription.user_id == current_user.id
+        ).first()
+
+        if not transcription:
+            raise HTTPException(status_code=404, detail="Transcription not found")
+
+        # Update fields if provided
+        if update.is_favorite is not None:
+            transcription.is_favorite = update.is_favorite
+
+        if update.folder_id is not None:
+            transcription.folder_id = update.folder_id
+
+        db.commit()
+        db.refresh(transcription)
+
+        return {"message": "Transcription updated successfully"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to update transcription: {e}")
+        raise HTTPException(status_code=500, detail="Failed to update transcription")

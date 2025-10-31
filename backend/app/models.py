@@ -28,6 +28,26 @@ class User(Base):
     transcriptions = relationship("Transcription", back_populates="user", cascade="all, delete-orphan")
     knowledge_queries = relationship("KnowledgeQuery", back_populates="user", cascade="all, delete-orphan")
 
+class Folder(Base):
+    __tablename__ = "folders"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    name = Column(String(255), nullable=False)
+    color = Column(String(7), default="#3B82F6")
+    icon = Column(String(50), default="folder")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+class Tag(Base):
+    __tablename__ = "tags"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    name = Column(String(100), nullable=False)
+    color = Column(String(7), default="#6B7280")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
 class Transcription(Base):
     __tablename__ = "transcriptions"
     
@@ -65,7 +85,11 @@ class Transcription(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     completed_at = Column(DateTime)
-    
+
+    # Organization
+    folder_id = Column(UUID(as_uuid=True), ForeignKey("folders.id", ondelete="SET NULL"), nullable=True)
+    is_favorite = Column(Boolean, default=False)
+
     # Relationships
     user = relationship("User", back_populates="transcriptions")
     chunks = relationship("TranscriptionChunk", back_populates="transcription", cascade="all, delete-orphan")

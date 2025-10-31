@@ -17,6 +17,7 @@ router = APIRouter()
 class QueryRequest(BaseModel):
     query: str
     limit: Optional[int] = 5
+    folder_id: Optional[str] = None  # Filter by folder
 
 class QueryResponse(BaseModel):
     answer: str
@@ -74,7 +75,8 @@ async def query_knowledge_base(
         result = await knowledge_service.query_knowledge_base(
             user_id=current_user.id,
             query_text=query_request.query,
-            limit=query_request.limit
+            limit=query_request.limit,
+            folder_id=query_request.folder_id
         )
         
         return QueryResponse(

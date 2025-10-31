@@ -22,11 +22,17 @@ import { useRouter } from 'next/navigation'
 interface DashboardStats {
   total_transcriptions: number
   completed_transcriptions: number
+  processing_transcriptions: number
+  failed_transcriptions: number
   total_duration_hours: number
+  avg_duration_minutes: number
   total_queries: number
   monthly_usage: number
   usage_limit: number
   storage_used_mb: number
+  success_rate: number
+  file_types: Array<{type: string, count: number}>
+  recent_activity: Array<{date: string, count: number}>
 }
 
 interface RecentTranscription {
@@ -55,16 +61,27 @@ export default function DashboardPage() {
 
   const fetchDashboardData = async () => {
     try {
-      // Fetch user stats
-      const statsResponse = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/users/stats`, {
+      // Fetch analytics dashboard stats
+      const statsResponse = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/analytics/dashboard-stats`, {
         headers: {
           Authorization: `Bearer ${token}`,
         },
       })
-      
+
       if (statsResponse.ok) {
         const statsData = await statsResponse.json()
         setStats(statsData)
+      } else {
+        // Fallback to old user stats endpoint
+        const fallbackResponse = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/users/stats`, {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        })
+        if (fallbackResponse.ok) {
+          const fallbackData = await fallbackResponse.json()
+          setStats(fallbackData)
+        }
       }
 
       // Fetch recent transcriptions
@@ -73,7 +90,7 @@ export default function DashboardPage() {
           Authorization: `Bearer ${token}`,
         },
       })
-      
+
       if (transcriptionsResponse.ok) {
         const transcriptionsData = await transcriptionsResponse.json()
         setRecentTranscriptions(transcriptionsData.transcriptions)
@@ -215,6 +232,77 @@ export default function DashboardPage() {
             </CardContent>
           </Card>
         </div>
+
+        {/* Analytics Row */}
+        {stats && (
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            {/* Success Rate */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-lg">Success Rate</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="text-center">
+                  <div className="text-4xl font-bold text-green-600">
+                    {stats.success_rate?.toFixed(1) || '0'}%
+                  </div>
+                  <p className="text-sm text-gray-600 mt-2">
+                    {stats.completed_transcriptions || 0} completed, {stats.failed_transcriptions || 0} failed
+                  </p>
+                  {stats.processing_transcriptions > 0 && (
+                    <p className="text-sm text-yellow-600 mt-1">
+                      {stats.processing_transcriptions} processing
+                    </p>
+                  )}
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* File Types Distribution */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-lg">File Types</CardTitle>
+              </CardHeader>
+              <CardContent>
+                {stats.file_types && stats.file_types.length > 0 ? (
+                  <div className="space-y-2">
+                    {stats.file_types.slice(0, 4).map((ft, idx) => (
+                      <div key={idx} className="flex items-center justify-between">
+                        <span className="text-sm text-gray-700">{ft.type || 'Unknown'}</span>
+                        <Badge className="bg-blue-100 text-blue-800">{ft.count}</Badge>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-sm text-gray-500 text-center py-4">No data yet</p>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* Average Duration */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-lg">Processing Stats</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-3">
+                  <div>
+                    <p className="text-sm text-gray-600">Avg Duration</p>
+                    <p className="text-2xl font-bold text-gray-900">
+                      {stats.avg_duration_minutes?.toFixed(1) || '0'} min
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-sm text-gray-600">Total Processed</p>
+                    <p className="text-xl font-semibold text-gray-900">
+                      {stats.total_duration_hours?.toFixed(1) || '0'}h
+                    </p>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        )}
 
         {/* Quick Actions */}
         <Card>

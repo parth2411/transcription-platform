@@ -52,7 +52,8 @@ class KnowledgeService:
         user_id: UUID,
         query_text: str,
         limit: int = 5,
-        similarity_threshold: float = 0.3
+        similarity_threshold: float = 0.3,
+        folder_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Query knowledge base using pgvector similarity search.
@@ -62,6 +63,7 @@ class KnowledgeService:
             query_text: Search query
             limit: Maximum results to return
             similarity_threshold: Minimum similarity score (0-1)
+            folder_id: Optional folder ID to filter results
 
         Returns:
             Dict with answer, sources, and query_id
@@ -71,16 +73,29 @@ class KnowledgeService:
         query_embedding = self.model.encode(query_text).tolist()
         vector_str = "[" + ",".join(str(v) for v in query_embedding) + "]"
 
+        # Build query with optional folder filter
+        folder_filter = ""
+        params = {
+            "query_embedding": vector_str,
+            "user_id": str(user_id),
+            "threshold": similarity_threshold,
+            "limit": limit
+        }
+
+        if folder_id:
+            folder_filter = "AND t.folder_id = :folder_id"
+            params["folder_id"] = folder_id
+
         # Search using pgvector (cosine similarity)
         # Uses <=> operator for cosine distance (1 - similarity)
         # Note: We use CAST(:query_embedding AS vector) to avoid :: syntax issues with SQLAlchemy
-        results = self.db.execute(text("""
+        results = self.db.execute(text(f"""
             SELECT
                 tc.id,
                 tc.transcription_id,
                 tc.text,
                 tc.chunk_index,
-                t.filename,
+                COALESCE(t.title, t.filename, 'Untitled') as display_title,
                 t.created_at,
                 1 - (tc.embedding <=> CAST(:query_embedding AS vector)) as similarity
             FROM transcription_chunks tc
@@ -88,14 +103,10 @@ class KnowledgeService:
             WHERE t.user_id = :user_id
               AND tc.embedding IS NOT NULL
               AND 1 - (tc.embedding <=> CAST(:query_embedding AS vector)) > :threshold
+              {folder_filter}
             ORDER BY tc.embedding <=> CAST(:query_embedding AS vector)
             LIMIT :limit
-        """), {
-            "query_embedding": vector_str,
-            "user_id": str(user_id),
-            "threshold": similarity_threshold,
-            "limit": limit
-        }).fetchall()
+        """), params).fetchall()
 
         # Format sources
         sources = []
@@ -105,7 +116,7 @@ class KnowledgeService:
                 "transcription_id": str(row[1]),
                 "text": row[2],
                 "chunk_index": row[3],
-                "filename": row[4],
+                "title": row[4],  # Changed from filename to title
                 "created_at": row[5].isoformat() if row[5] else None,
                 "similarity": float(row[6])
             })
@@ -480,14 +491,23 @@ class KnowledgeService:
             Generated answer
         """
 
-        prompt = f"""You are a helpful assistant analyzing transcription data.
+        prompt = f"""Based on the transcription context provided below, answer the user's question accurately and comprehensively.
 
 Context from transcriptions:
 {context}
 
 User question: {query}
 
-Please provide a comprehensive answer based on the context above. If the context doesn't contain enough information, say so clearly."""
+Instructions:
+- Provide a clear, well-structured answer using the information from the transcriptions
+- Use plain paragraph format without markdown symbols (no asterisks, no hashtags, no bold)
+- For lists, use simple line breaks with dashes (-) instead of asterisks
+- Include specific details, names, dates, and numbers mentioned in the context
+- If the context contains multiple relevant sections, synthesize them into a coherent response
+- If the context doesn't fully answer the question, provide what you can and note what's missing
+- Keep the response focused and relevant to the question
+- Do not make up information not present in the context
+- Write in a natural, conversational style"""
 
         try:
             # Check if Groq client is available
@@ -497,11 +517,11 @@ Please provide a comprehensive answer based on the context above. If the context
             response = self.groq_client.chat.completions.create(
                 model="meta-llama/llama-4-scout-17b-16e-instruct",
                 messages=[
-                    {"role": "system", "content": "You are a helpful assistant that answers questions based on provided transcription context."},
+                    {"role": "system", "content": "You are an expert assistant that provides clear, accurate answers based on transcription content. You extract key information and present it in a well-organized, easy-to-understand format."},
                     {"role": "user", "content": prompt}
                 ],
-                temperature=0.7,
-                max_tokens=500
+                temperature=0.3,
+                max_tokens=800
             )
 
             return response.choices[0].message.content
