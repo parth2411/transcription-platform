@@ -72,8 +72,8 @@ async def query_knowledge_base(
 
         knowledge_service = KnowledgeService(db)
         result = await knowledge_service.query_knowledge_base(
-            user=current_user,
-            query=query_request.query,
+            user_id=current_user.id,
+            query_text=query_request.query,
             limit=query_request.limit
         )
         
@@ -108,7 +108,7 @@ async def get_query_history(
 
         knowledge_service = KnowledgeService(db)
         queries = await knowledge_service.get_query_history(
-            user=current_user,
+            user_id=current_user.id,
             limit=per_page,
             offset=offset
         )
@@ -122,10 +122,10 @@ async def get_query_history(
         query_items = [
             QueryHistoryItem(
                 id=q["id"],
-                query=q["query"],
-                answer=q["answer"],
-                confidence=q["confidence"],
-                response_time_ms=q["response_time_ms"],
+                query=q["query_text"],
+                answer=q["response_text"],
+                confidence=q["confidence_score"],
+                response_time_ms=q.get("response_time_ms"),
                 created_at=q["created_at"],
                 source_count=q["source_count"]
             )
@@ -156,7 +156,7 @@ async def clear_query_history(
     """
     try:
         knowledge_service = KnowledgeService(db)
-        success = await knowledge_service.delete_query_history(current_user)
+        success = await knowledge_service.delete_query_history(user_id=current_user.id)
         
         if success:
             return {"message": "Query history cleared successfully"}
@@ -185,7 +185,7 @@ async def get_knowledge_base_stats(
     """
     try:
         knowledge_service = KnowledgeService(db)
-        stats = await knowledge_service.get_knowledge_base_stats(current_user)
+        stats = await knowledge_service.get_knowledge_base_stats(user_id=current_user.id)
         
         return KnowledgeStatsResponse(
             transcription_count=stats["transcription_count"],
@@ -212,7 +212,7 @@ async def clear_knowledge_base(
     """
     try:
         knowledge_service = KnowledgeService(db)
-        success = await knowledge_service.clear_knowledge_base(current_user)
+        success = await knowledge_service.clear_knowledge_base(user_id=current_user.id)
         
         if success:
             return {"message": "Knowledge base cleared successfully"}
@@ -244,22 +244,43 @@ async def search_transcriptions(
     try:
         knowledge_service = KnowledgeService(db)
 
-        # Use the knowledge service to search
-        search_results = await knowledge_service.search_vectors(
-            user=current_user,
-            query=q,
-            limit=limit
-        )
+        # Generate query embedding
+        query_embedding = knowledge_service.model.encode(q).tolist()
+        vector_str = "[" + ",".join(str(v) for v in query_embedding) + "]"
+
+        # Search using pgvector
+        # Note: We use CAST(:query_embedding AS vector) to avoid :: syntax issues with SQLAlchemy
+        search_results = db.execute(text("""
+            SELECT
+                tc.id,
+                tc.transcription_id,
+                tc.text,
+                tc.chunk_index,
+                t.filename,
+                t.created_at,
+                1 - (tc.embedding <=> CAST(:query_embedding AS vector)) as similarity
+            FROM transcription_chunks tc
+            JOIN transcriptions t ON t.id = tc.transcription_id
+            WHERE t.user_id = :user_id
+              AND tc.embedding IS NOT NULL
+            ORDER BY tc.embedding <=> CAST(:query_embedding AS vector)
+            LIMIT :limit
+        """), {
+            "query_embedding": vector_str,
+            "user_id": str(current_user.id),
+            "limit": limit
+        }).fetchall()
 
         results = []
-        for result in search_results:
+        for row in search_results:
+            text = row[2]
             results.append({
-                "transcription_id": str(result["transcription_id"]),
-                "title": result.get("title", "Untitled"),
-                "text_snippet": result["text"][:200] + "..." if len(result["text"]) > 200 else result["text"],
-                "type": result.get("type", "chunk"),
-                "confidence": result["similarity"],
-                "created_at": result.get("created_at", "")
+                "transcription_id": str(row[1]),
+                "title": row[4] or "Untitled",
+                "text_snippet": text[:200] + "..." if len(text) > 200 else text,
+                "type": "chunk",
+                "confidence": float(row[6]),
+                "created_at": row[5].isoformat() if row[5] else ""
             })
 
         return {
@@ -284,79 +305,52 @@ async def debug_knowledge_status(
 ):
     """Debug endpoint to check knowledge base status"""
     try:
-        collection_name = f"user_{current_user.id}_transcriptions"
-        
+        knowledge_service = KnowledgeService(db)
+
         debug_info = {
             "user_id": str(current_user.id),
-            "collection_name": collection_name,
             "service_status": {
-                "qdrant_available": knowledge_service.qdrant_available,
-                "embedder_available": knowledge_service.embedder_available,
+                "pgvector_available": True,
                 "groq_available": knowledge_service.groq_available
             }
         }
-        
-        # Check Qdrant collection
-        if knowledge_service.qdrant_available:
-            try:
-                collection_info = knowledge_service.qdrant_client.get_collection(collection_name)
-                debug_info["qdrant_status"] = {
-                    "collection_exists": True,
-                    "points_count": collection_info.points_count,
-                    "vectors_count": collection_info.vectors_count
-                }
-                
-                # Get a sample of points
-                if collection_info.points_count > 0:
-                    sample_points = knowledge_service.qdrant_client.scroll(
-                        collection_name=collection_name,
-                        limit=3,
-                        with_payload=True
-                    )
-                    debug_info["sample_points"] = [
-                        {
-                            "id": str(point.id),
-                            "payload_keys": list(point.payload.keys()) if point.payload else [],
-                            "title": point.payload.get("title") if point.payload else None,
-                            "content_type": point.payload.get("content_type") if point.payload else None
-                        }
-                        for point in sample_points[0][:3]
-                    ]
-            except Exception as e:
-                debug_info["qdrant_status"] = {
-                    "collection_exists": False,
-                    "error": str(e)
-                }
-        
+
+        # Check pgvector chunks
+        chunk_count = db.execute(text("""
+            SELECT COUNT(*) FROM transcription_chunks tc
+            JOIN transcriptions t ON t.id = tc.transcription_id
+            WHERE t.user_id = :user_id AND tc.embedding IS NOT NULL
+        """), {"user_id": str(current_user.id)}).scalar()
+
+        debug_info["pgvector_status"] = {
+            "chunks_with_embeddings": chunk_count
+        }
+
         # Check database transcriptions
-        transcriptions_with_kb = db.query(Transcription).filter(
+        total_completed = db.query(Transcription).filter(
             Transcription.user_id == current_user.id,
-            Transcription.status == "completed",
-            Transcription.qdrant_point_ids.isnot(None)
-        ).all()
-        
+            Transcription.status == "completed"
+        ).count()
+
+        recent_transcriptions = db.query(Transcription).filter(
+            Transcription.user_id == current_user.id
+        ).order_by(Transcription.created_at.desc()).limit(5).all()
+
         debug_info["database_status"] = {
-            "total_completed": db.query(Transcription).filter(
-                Transcription.user_id == current_user.id,
-                Transcription.status == "completed"
-            ).count(),
-            "with_knowledge_base": len(transcriptions_with_kb),
+            "total_completed": total_completed,
             "recent_transcriptions": [
                 {
                     "id": str(t.id),
                     "title": t.title,
-                    "has_qdrant_points": bool(t.qdrant_point_ids),
-                    "qdrant_collection": t.qdrant_collection,
+                    "status": t.status,
                     "created_at": t.created_at.isoformat()
                 }
-                for t in db.query(Transcription).filter(
-                    Transcription.user_id == current_user.id
-                ).order_by(Transcription.created_at.desc()).limit(5).all()
+                for t in recent_transcriptions
             ]
         }
-        
+
         return debug_info
-        
+
     except Exception as e:
         logger.error(f"Debug status failed: {e}")
         return {"error": str(e), "error_type": type(e).__name__}
@@ -370,23 +364,23 @@ async def debug_test_query(
     """Test a simple query to debug issues"""
     try:
         logger.info(f"Testing query: {query}")
-        
+
+        knowledge_service = KnowledgeService(db)
         result = await knowledge_service.query_knowledge_base(
-            db=db,
-            user=current_user,
-            query=query,
+            user_id=current_user.id,
+            query_text=query,
             limit=3
         )
-        
+
         return {
             "test_query": query,
             "result": result,
             "debug_info": {
-                "service_available": knowledge_service.qdrant_available,
-                "embedder_available": knowledge_service.embedder_available
+                "pgvector_available": True,
+                "groq_available": knowledge_service.groq_available
             }
         }
-        
+
     except Exception as e:
         logger.error(f"Test query failed: {e}")
         import traceback

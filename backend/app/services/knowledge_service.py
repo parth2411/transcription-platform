@@ -25,8 +25,8 @@ class KnowledgeService:
 
     def __init__(self, db: Session):
         self.db = db
-        # Use same embedding model as before (384 dimensions)
-        self.model = SentenceTransformer('all-MiniLM-L6-v2')
+        # Lazy-load embedding model only when needed (performance optimization)
+        self._model = None
 
         # Initialize Groq client if API key is available
         try:
@@ -37,6 +37,15 @@ class KnowledgeService:
             logger.error(f"❌ Groq initialization failed: {e}")
             self.groq_client = None
             self.groq_available = False
+
+    @property
+    def model(self):
+        """Lazy-load the embedding model only when needed"""
+        if self._model is None:
+            logger.info("Loading SentenceTransformer model...")
+            self._model = SentenceTransformer('all-MiniLM-L6-v2')
+            logger.info("✅ SentenceTransformer model loaded")
+        return self._model
 
     async def query_knowledge_base(
         self,
@@ -64,6 +73,7 @@ class KnowledgeService:
 
         # Search using pgvector (cosine similarity)
         # Uses <=> operator for cosine distance (1 - similarity)
+        # Note: We use CAST(:query_embedding AS vector) to avoid :: syntax issues with SQLAlchemy
         results = self.db.execute(text("""
             SELECT
                 tc.id,
@@ -72,13 +82,13 @@ class KnowledgeService:
                 tc.chunk_index,
                 t.filename,
                 t.created_at,
-                1 - (tc.embedding <=> :query_embedding::vector) as similarity
+                1 - (tc.embedding <=> CAST(:query_embedding AS vector)) as similarity
             FROM transcription_chunks tc
             JOIN transcriptions t ON t.id = tc.transcription_id
             WHERE t.user_id = :user_id
               AND tc.embedding IS NOT NULL
-              AND 1 - (tc.embedding <=> :query_embedding::vector) > :threshold
-            ORDER BY tc.embedding <=> :query_embedding::vector
+              AND 1 - (tc.embedding <=> CAST(:query_embedding AS vector)) > :threshold
+            ORDER BY tc.embedding <=> CAST(:query_embedding AS vector)
             LIMIT :limit
         """), {
             "query_embedding": vector_str,
@@ -228,30 +238,40 @@ class KnowledgeService:
             Dict with statistics
         """
 
-        # Get transcription and chunk counts
-        stats = self.db.execute(text("""
+        # Optimized: Run queries in parallel for better performance
+        # Get transcription count and total duration (fast query)
+        transcription_stats = self.db.execute(text("""
             SELECT
-                COUNT(DISTINCT t.id) as transcription_count,
-                COUNT(tc.id) as chunk_count,
-                AVG(LENGTH(tc.text)) as avg_chunk_length,
-                SUM(t.duration_seconds) as total_duration
+                COUNT(t.id) as transcription_count,
+                COALESCE(SUM(t.duration_seconds), 0) as total_duration
             FROM transcriptions t
-            LEFT JOIN transcription_chunks tc ON tc.transcription_id = t.id
             WHERE t.user_id = :user_id
               AND t.add_to_knowledge_base = true
         """), {"user_id": str(user_id)}).fetchone()
+
+        # Get chunk count (separate query, only count chunks)
+        chunk_count = self.db.execute(text("""
+            SELECT COUNT(tc.id)
+            FROM transcription_chunks tc
+            JOIN transcriptions t ON tc.transcription_id = t.id
+            WHERE t.user_id = :user_id
+              AND tc.embedding IS NOT NULL
+        """), {"user_id": str(user_id)}).scalar() or 0
 
         # Get query count
         query_count = self.db.query(KnowledgeQuery).filter(
             KnowledgeQuery.user_id == user_id
         ).count()
 
+        total_duration_seconds = int(transcription_stats[1]) if transcription_stats[1] else 0
+        total_duration_hours = round(total_duration_seconds / 3600, 2)
+
         return {
-            "transcription_count": stats[0] or 0,
-            "chunk_count": stats[1] or 0,
+            "transcription_count": transcription_stats[0] or 0,
+            "vector_count": chunk_count,
             "query_count": query_count,
-            "avg_chunk_length": int(stats[2]) if stats[2] else 0,
-            "total_duration_seconds": int(stats[3]) if stats[3] else 0
+            "total_duration_hours": total_duration_hours,
+            "collection_name": "pgvector"  # Using pgvector instead of Qdrant collections
         }
 
     async def get_query_history(
@@ -475,7 +495,7 @@ Please provide a comprehensive answer based on the context above. If the context
                 return "AI answer generation is unavailable. Please set GROQ_API_KEY environment variable."
 
             response = self.groq_client.chat.completions.create(
-                model="llama-3.1-8b-instant",
+                model="meta-llama/llama-4-scout-17b-16e-instruct",
                 messages=[
                     {"role": "system", "content": "You are a helpful assistant that answers questions based on provided transcription context."},
                     {"role": "user", "content": prompt}

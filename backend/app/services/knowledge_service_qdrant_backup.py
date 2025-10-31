@@ -190,7 +190,7 @@ class KnowledgeService:
                 
                 try:
                     response = self.groq_client.chat.completions.create(
-                        model="llama-3.1-8b-instant",
+                        model="meta-llama/llama-4-scout-17b-16e-instruct",
                         messages=[{"role": "user", "content": prompt}],
                         max_tokens=1000,
                         temperature=0.3

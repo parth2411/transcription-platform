@@ -786,7 +786,7 @@ Brief 2-3 sentence summary of the entire conversation
 Keep the summary concise yet comprehensive. Focus on what matters most."""
 
                 response = self.groq_client.chat.completions.create(
-                    model="llama-3.1-8b-instant",
+                    model="meta-llama/llama-4-scout-17b-16e-instruct",
                     messages=[
                         {"role": "system", "content": "You are a professional transcription analyst who creates clear, actionable summaries."},
                         {"role": "user", "content": prompt}
@@ -1635,7 +1635,7 @@ Transcription excerpt:
 Respond with ONLY the title, nothing else."""
 
                 response = self.groq_client.chat.completions.create(
-                    model="llama-3.1-8b-instant",
+                    model="meta-llama/llama-4-scout-17b-16e-instruct",
                     messages=[
                         {"role": "system", "content": "You are a title generator. Generate short, clear titles."},
                         {"role": "user", "content": prompt}
