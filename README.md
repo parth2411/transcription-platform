@@ -393,13 +393,6 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - [FastAPI](https://fastapi.tiangolo.com) for the excellent framework
 - [Next.js](https://nextjs.org) for the frontend framework
 
-## Support
-
-- **Documentation**: [DEPLOYMENT.md](DEPLOYMENT.md)
-- **Issues**: [GitHub Issues](https://github.com/yourusername/transcription-platform/issues)
-- **Email**: support@yourdomain.com
-- **Discord**: [Join our community](#)
-
 ## Changelog
 
 ### v1.0.0 (2025-10-24)
