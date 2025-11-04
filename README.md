@@ -369,11 +369,6 @@ We welcome contributions! Please follow these steps:
 - **Commits**: Use conventional commits
 - **Tests**: Write tests for new features
 
-## Security
-
-### Reporting Vulnerabilities
-Please report security vulnerabilities to: security@yourdomain.com
-
 ### Best Practices
 - Never commit `.env` files
 - Rotate API keys regularly
