@@ -399,6 +399,5 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - 🐛 Fixed async issues in transcription service
 - 📝 Comprehensive documentation
 
----
 
 Made with ❤️ for the transcription community
