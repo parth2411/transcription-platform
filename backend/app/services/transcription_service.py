@@ -1008,12 +1008,11 @@ Keep the summary concise yet comprehensive. Focus on what matters most."""
             knowledge_service = KnowledgeService(db)
 
             # Store the transcription with chunks
-            await knowledge_service.store_transcription_with_chunks(
+            await knowledge_service.store_transcription(
                 transcription_id=transcription_id,
+                text=transcription,
                 user_id=user_id,
-                transcription_text=transcription,
-                summary_text=summary,
-                title=metadata.get('title') if metadata else None
+                summary=summary
             )
 
             logger.info(f"Successfully stored transcription in pgvector knowledge base")

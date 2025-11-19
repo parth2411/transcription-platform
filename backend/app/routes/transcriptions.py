@@ -136,12 +136,13 @@ async def process_transcription_background(
         # Log final status
         logger.info(f"Background processing completed for {transcription_id}")
         logger.info(f"Final status: {result.status}")
-        
+
         if result.add_to_knowledge_base:
-            if result.qdrant_point_ids:
-                logger.info(f"Successfully stored {len(result.qdrant_point_ids)} points in knowledge base")
+            # Check if chunks were created (stored in knowledge base)
+            if result.chunks and len(result.chunks) > 0:
+                logger.info(f"Successfully stored {len(result.chunks)} chunks in knowledge base")
             else:
-                logger.warning("Knowledge base storage was enabled but no points were stored")
+                logger.warning("Knowledge base storage was enabled but no chunks were stored")
         
     except Exception as e:
         logger.error(f"Background processing failed for {transcription_id}: {e}")
@@ -898,11 +899,13 @@ async def delete_transcription(
             )
         
         # Delete from vector database if exists
-        if transcription.qdrant_point_ids:
-            await transcription_service.delete_from_qdrant(
-                str(current_user.id),
-                transcription.qdrant_point_ids
-            )
+        try:
+            from app.services.knowledge_service import KnowledgeService
+            knowledge_service = KnowledgeService(db)
+            await knowledge_service.delete_transcription_vectors(transcription.id)
+            logger.info(f"Deleted vector embeddings for transcription {transcription_id}")
+        except Exception as e:
+            logger.warning(f"Failed to delete vector embeddings: {e}")
         
         # Delete file from storage if exists
         if transcription.file_url and not transcription.file_url.startswith('http'):
