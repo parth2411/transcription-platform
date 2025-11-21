@@ -124,7 +124,7 @@ class KnowledgeService:
         # Generate answer using Groq
         if sources:
             context_text = "\n\n".join([
-                f"From {s['filename']} (chunk {s['chunk_index']}):\n{s['text']}"
+                f"From {s['title']} (chunk {s['chunk_index']}):\n{s['text']}"
                 for s in sources
             ])
             answer = await self._generate_answer(query_text, context_text)
