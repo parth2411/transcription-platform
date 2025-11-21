@@ -33,6 +33,9 @@ class Settings(BaseSettings):
     # CORS - Can be comma-separated string or list
     ALLOWED_ORIGINS: Union[str, List[str]] = "http://localhost:3000,http://localhost:8080"
 
+    # Frontend URL (for OAuth redirects)
+    FRONTEND_URL: str = "http://localhost:3000"
+
     @field_validator('ALLOWED_ORIGINS', mode='before')
     @classmethod
     def parse_origins(cls, v):
@@ -82,6 +85,25 @@ class Settings(BaseSettings):
     DIARIZATION_ENABLED: bool = False          # Enable/disable speaker diarization
     MIN_SPEAKERS: int = 1                      # Minimum number of speakers
     MAX_SPEAKERS: int = 10                     # Maximum number of speakers
+
+    # Calendar Integration Settings (Granola Features)
+    GOOGLE_CLIENT_ID: str = ""                 # Google OAuth Client ID
+    GOOGLE_CLIENT_SECRET: str = ""             # Google OAuth Client Secret
+    GOOGLE_REDIRECT_URI: str = "http://localhost:8000/api/calendar/google/callback"
+
+    MICROSOFT_CLIENT_ID: str = ""              # Microsoft OAuth Client ID (for future)
+    MICROSOFT_CLIENT_SECRET: str = ""          # Microsoft OAuth Client Secret (for future)
+
+    APPLE_CLIENT_ID: str = ""                  # Apple Client ID (for future)
+    APPLE_CLIENT_SECRET: str = ""              # Apple Client Secret (for future)
+
+    # Calendar Sync Settings
+    CALENDAR_SYNC_INTERVAL_MINUTES: int = 15   # How often to sync calendars
+    MEETING_PREP_MINUTES_BEFORE: int = 15      # Prepare meetings N minutes before start
+
+    # WebSocket Settings (for real-time transcription)
+    WEBSOCKET_HEARTBEAT_INTERVAL: int = 30     # Seconds
+    WEBSOCKET_MAX_CONNECTIONS: int = 100       # Max concurrent WebSocket connections
 
     class Config:
         # Look for .env in multiple locations:
