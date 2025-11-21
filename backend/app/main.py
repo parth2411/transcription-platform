@@ -7,7 +7,7 @@ import os
 
 from .config import settings
 from .database import engine, Base, get_db
-from .routes import auth, transcriptions, knowledge, users, realtime, analytics, folders
+from .routes import auth, transcriptions, knowledge, users, realtime, analytics, folders, calendar, meetings
 
 # Configure logging
 logging.basicConfig(
@@ -53,6 +53,9 @@ app.include_router(users.router, prefix="/api/users", tags=["Users"])
 app.include_router(realtime.router, prefix="/api/transcriptions", tags=["Real-time"])
 app.include_router(analytics.router, prefix="/api/analytics", tags=["Analytics"])
 app.include_router(folders.router, prefix="/api", tags=["Folders & Tags"])
+# NEW: Granola Features - Calendar OAuth and Meetings
+app.include_router(calendar.router, prefix="/api/calendar", tags=["Calendar Integration"])
+app.include_router(meetings.router, prefix="/api", tags=["Meetings"])
 
 # Create uploads directory
 os.makedirs("uploads", exist_ok=True)
