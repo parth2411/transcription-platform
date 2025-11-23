@@ -91,8 +91,10 @@ class Settings(BaseSettings):
     GOOGLE_CLIENT_SECRET: str = ""             # Google OAuth Client Secret
     GOOGLE_REDIRECT_URI: str = "http://localhost:8000/api/calendar/google/callback"
 
-    MICROSOFT_CLIENT_ID: str = ""              # Microsoft OAuth Client ID (for future)
-    MICROSOFT_CLIENT_SECRET: str = ""          # Microsoft OAuth Client Secret (for future)
+    MICROSOFT_CLIENT_ID: str = ""              # Microsoft OAuth Client ID
+    MICROSOFT_CLIENT_SECRET: str = ""          # Microsoft OAuth Client Secret
+    MICROSOFT_REDIRECT_URI: str = "http://localhost:8000/api/calendar/microsoft/callback"
+    MICROSOFT_TENANT_ID: str = "common"        # 'common' for multi-tenant, or your tenant ID
 
     APPLE_CLIENT_ID: str = ""                  # Apple Client ID (for future)
     APPLE_CLIENT_SECRET: str = ""              # Apple Client Secret (for future)
