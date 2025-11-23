@@ -14,7 +14,9 @@ import {
   ExternalLink,
   RefreshCw,
   CheckCircle,
-  Circle
+  Circle,
+  FileText,
+  Eye
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
@@ -323,25 +325,50 @@ export default function MeetingsPage() {
                     </div>
 
                     {/* Action Buttons */}
-                    <div className="flex items-center gap-2 ml-4">
-                      {meeting.meeting_url && (
-                        <a
-                          href={meeting.meeting_url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                        >
+                    <div className="flex flex-col gap-2 ml-4">
+                      <div className="flex items-center gap-2">
+                        {/* View Details Button - Always visible */}
+                        <Link href={`/meetings/${meeting.id}`}>
                           <Button variant="outline" size="sm">
-                            <ExternalLink className="w-4 h-4 mr-2" />
-                            Join
+                            <Eye className="w-4 h-4 mr-2" />
+                            Details
                           </Button>
-                        </a>
-                      )}
-                      {isUpcoming(meeting.start_time) && (
-                        <Button size="sm">
-                          <Video className="w-4 h-4 mr-2" />
-                          Record
-                        </Button>
-                      )}
+                        </Link>
+
+                        {/* Join Meeting Button - Only if meeting URL exists */}
+                        {meeting.meeting_url && (
+                          <a
+                            href={meeting.meeting_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                          >
+                            <Button variant="outline" size="sm">
+                              <ExternalLink className="w-4 h-4 mr-2" />
+                              Join
+                            </Button>
+                          </a>
+                        )}
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        {/* Add Note Button - Always visible */}
+                        <Link href={`/meetings/${meeting.id}?tab=notes`}>
+                          <Button variant="outline" size="sm">
+                            <FileText className="w-4 h-4 mr-2" />
+                            Add Note
+                          </Button>
+                        </Link>
+
+                        {/* Record Button - Only for upcoming meetings */}
+                        {isUpcoming(meeting.start_time) && (
+                          <Link href={`/meetings/${meeting.id}?tab=recording`}>
+                            <Button size="sm" className="bg-red-600 hover:bg-red-700 text-white">
+                              <Video className="w-4 h-4 mr-2" />
+                              Record
+                            </Button>
+                          </Link>
+                        )}
+                      </div>
                     </div>
                   </div>
 
