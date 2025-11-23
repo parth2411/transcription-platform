@@ -34,6 +34,7 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
     { name: 'Dashboard', href: '/dashboard', icon: FileText },
     { name: 'New Transcription', href: '/transcriptions/new', icon: Plus },
     { name: 'Library', href: '/transcriptions', icon: FileAudio },
+    { name: 'Meetings', href: '/meetings', icon: Clock },
     { name: 'Knowledge Base', href: '/knowledge', icon: MessageSquare },
     { name: 'Settings', href: '/settings', icon: Settings },
   ]
