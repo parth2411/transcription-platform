@@ -10,16 +10,21 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import List, Optional
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from ..database import get_db
 from ..models import User, CalendarConnection, Meeting
 from ..services.auth_service import get_current_user
 from ..services.calendar_service import CalendarService
+from ..services.microsoft_calendar_service import MicrosoftCalendarService
 from ..config import settings
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+# Initialize services
+google_calendar_service = CalendarService()
+microsoft_calendar_service = MicrosoftCalendarService()
 
 # Pydantic models for request/response
 class CalendarConnectionResponse(BaseModel):
@@ -152,6 +157,140 @@ async def google_calendar_callback(
 
     except Exception as e:
         logger.error(f"Google OAuth callback error: {e}")
+        frontend_url = getattr(settings, 'FRONTEND_URL', 'http://localhost:3000')
+        return RedirectResponse(
+            url=f"{frontend_url}/settings/calendar?error=true&message=connection_failed",
+            status_code=302
+        )
+
+
+# ==========================================
+# MICROSOFT OAUTH FLOW ENDPOINTS
+# ==========================================
+
+@router.post("/microsoft/auth", response_model=OAuthInitResponse)
+async def initiate_microsoft_calendar_auth(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Step 1: Initiate Microsoft Calendar OAuth flow
+
+    Returns OAuth URL that user should be redirected to.
+    User will authorize on Microsoft's website, then be redirected back.
+
+    Example:
+        POST /api/calendar/microsoft/auth
+        Response: { "auth_url": "https://login.microsoftonline.com/...", ... }
+    """
+    try:
+        # Generate state token for security (includes user_id)
+        state = f"{current_user.id}"
+
+        # Get OAuth URL
+        auth_url = microsoft_calendar_service.get_auth_url(state=state)
+
+        logger.info(f"Generated Microsoft OAuth URL for user {current_user.id}")
+
+        return OAuthInitResponse(
+            auth_url=auth_url,
+            provider="microsoft",
+            message="Redirect user to this URL to authorize Microsoft Calendar access"
+        )
+
+    except Exception as e:
+        logger.error(f"Error generating Microsoft OAuth URL: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to generate authorization URL"
+        )
+
+
+@router.get("/microsoft/callback")
+async def microsoft_calendar_callback(
+    code: str = Query(..., description="Authorization code from Microsoft"),
+    state: str = Query(..., description="State token for security"),
+    error: Optional[str] = Query(None, description="Error from Microsoft"),
+    db: Session = Depends(get_db)
+):
+    """
+    Step 2: OAuth callback endpoint for Microsoft
+
+    Microsoft redirects here after user authorizes.
+    This endpoint is called automatically - user doesn't interact with it.
+
+    Exchanges authorization code for access tokens and saves connection.
+    """
+    # Handle OAuth errors
+    if error:
+        logger.error(f"Microsoft OAuth error: {error}")
+        return RedirectResponse(
+            url=f"{settings.FRONTEND_URL}/settings/calendar?error=oauth_failed&message={error}",
+            status_code=302
+        )
+
+    try:
+        # Extract user_id from state
+        user_id = state
+
+        # Exchange code for tokens
+        token_data = microsoft_calendar_service.exchange_code_for_token(code)
+
+        # Get user info
+        user_info = microsoft_calendar_service.get_user_info(token_data["access_token"])
+
+        # Get calendars
+        calendars = microsoft_calendar_service.list_calendars(token_data["access_token"])
+        primary_calendar = calendars[0] if calendars else None
+
+        # Create or update calendar connection
+        connection = db.query(CalendarConnection).filter(
+            CalendarConnection.user_id == user_id,
+            CalendarConnection.provider == "microsoft"
+        ).first()
+
+        if connection:
+            # Update existing connection
+            connection.access_token = token_data["access_token"]
+            connection.refresh_token = token_data.get("refresh_token")
+            connection.token_expires_at = datetime.utcnow() + timedelta(seconds=token_data.get("expires_in", 3600))
+            connection.is_active = True
+        else:
+            # Create new connection
+            connection = CalendarConnection(
+                user_id=user_id,
+                provider="microsoft",
+                calendar_id=primary_calendar.get("id") if primary_calendar else "primary",
+                calendar_name=primary_calendar.get("name", "Primary") if primary_calendar else "Primary",
+                access_token=token_data["access_token"],
+                refresh_token=token_data.get("refresh_token"),
+                token_expires_at=datetime.utcnow() + timedelta(seconds=token_data.get("expires_in", 3600)),
+                is_active=True,
+                sync_enabled=True,
+                auto_record_meetings=False
+            )
+            db.add(connection)
+
+        db.commit()
+        db.refresh(connection)
+
+        # Initial sync of calendar events
+        try:
+            microsoft_calendar_service.sync_calendar_events(db, connection, user_id)
+        except Exception as sync_error:
+            logger.warning(f"Initial sync failed but connection created: {sync_error}")
+
+        logger.info(f"Successfully connected Microsoft Calendar for user {user_id}")
+
+        # Redirect to success page
+        frontend_url = getattr(settings, 'FRONTEND_URL', 'http://localhost:3000')
+        return RedirectResponse(
+            url=f"{frontend_url}/settings/calendar?success=true&provider=microsoft",
+            status_code=302
+        )
+
+    except Exception as e:
+        logger.error(f"Microsoft OAuth callback error: {e}")
         frontend_url = getattr(settings, 'FRONTEND_URL', 'http://localhost:3000')
         return RedirectResponse(
             url=f"{frontend_url}/settings/calendar?error=true&message=connection_failed",
