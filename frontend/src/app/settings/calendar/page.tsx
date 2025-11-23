@@ -310,20 +310,18 @@ export default function CalendarSettingsPage() {
             syncing={syncing}
           />
 
-          {/* Microsoft Outlook - Coming Soon */}
-          <Card className="border-gray-200 opacity-60">
-            <CardHeader>
-              <div className="text-4xl mb-3">📧</div>
-              <CardTitle>Outlook Calendar</CardTitle>
-              <CardDescription>Outlook, Microsoft 365</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <Badge variant="secondary">Coming Soon</Badge>
-              <p className="text-sm text-muted-foreground mt-2">
-                Microsoft calendar integration will be available in the next release.
-              </p>
-            </CardContent>
-          </Card>
+          {/* Microsoft Outlook */}
+          <CalendarProviderCard
+            provider="microsoft"
+            isPrimary={platform?.primarySuggestion === 'microsoft'}
+            connection={getConnectionForProvider('microsoft')}
+            onConnect={() => handleConnectCalendar('microsoft')}
+            onDisconnect={(id) => handleDisconnectCalendar(id, 'microsoft')}
+            onSync={handleSyncCalendar}
+            onToggleSync={handleToggleSyncEnabled}
+            onToggleAutoRecord={handleToggleAutoRecord}
+            syncing={syncing}
+          />
 
           {/* Apple iCloud - Coming Soon */}
           <Card className="border-gray-200 opacity-60">
