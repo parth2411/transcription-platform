@@ -8,6 +8,8 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Switch } from '@/components/ui/switch';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import {
   Calendar,
   CheckCircle,
@@ -323,20 +325,15 @@ export default function CalendarSettingsPage() {
             syncing={syncing}
           />
 
-          {/* Apple iCloud - Coming Soon */}
-          <Card className="border-gray-200 opacity-60">
-            <CardHeader>
-              <div className="text-4xl mb-3">🍎</div>
-              <CardTitle>iCloud Calendar</CardTitle>
-              <CardDescription>Apple Calendar, iCloud</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <Badge variant="secondary">Coming Soon</Badge>
-              <p className="text-sm text-muted-foreground mt-2">
-                iCloud calendar integration will be available soon.
-              </p>
-            </CardContent>
-          </Card>
+          {/* Apple iCloud */}
+          <AppleCalendarCard
+            connection={getConnectionForProvider('apple')}
+            onDisconnect={(id: string) => handleDisconnectCalendar(id, 'apple')}
+            onSync={handleSyncCalendar}
+            onToggleSync={handleToggleSyncEnabled}
+            onToggleAutoRecord={handleToggleAutoRecord}
+            syncing={syncing}
+          />
         </div>
 
         {/* Connected Calendars List */}
@@ -453,6 +450,230 @@ export default function CalendarSettingsPage() {
         </Card>
       </div>
     </DashboardLayout>
+  );
+}
+
+// Apple Calendar Card Component (uses CalDAV)
+function AppleCalendarCard({
+  connection,
+  onDisconnect,
+  onSync,
+  onToggleSync,
+  onToggleAutoRecord,
+  syncing
+}: {
+  connection?: CalendarConnection;
+  onDisconnect: (id: string) => void;
+  onSync: (id: string) => void;
+  onToggleSync: (id: string, enabled: boolean) => void;
+  onToggleAutoRecord: (id: string, enabled: boolean) => void;
+  syncing: string | null;
+}) {
+  const { token } = useAuth();
+  const [showSetup, setShowSetup] = useState(false);
+  const [email, setEmail] = useState('');
+  const [appPassword, setAppPassword] = useState('');
+  const [isConnecting, setIsConnecting] = useState(false);
+  const [error, setError] = useState('');
+
+  const isConnected = !!connection;
+  const isSyncing = syncing === connection?.id;
+
+  const handleConnect = async () => {
+    if (!email || !appPassword) {
+      setError('Please enter your iCloud email and app-specific password');
+      return;
+    }
+
+    setIsConnecting(true);
+    setError('');
+
+    try {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/calendar/apple/setup`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          email,
+          app_password: appPassword,
+          calendar_id: 'all'
+        }),
+      });
+
+      if (response.ok) {
+        // Success - reload the page to show the connected calendar
+        window.location.reload();
+      } else {
+        const data = await response.json();
+        setError(data.detail || 'Failed to connect. Please check your credentials.');
+      }
+    } catch (err) {
+      setError('Failed to connect. Please try again.');
+    } finally {
+      setIsConnecting(false);
+    }
+  };
+
+  return (
+    <Card className="border-gray-200">
+      <CardHeader>
+        <div className="text-4xl mb-3">🍎</div>
+        <CardTitle>iCloud Calendar</CardTitle>
+        <CardDescription>Apple Calendar, macOS</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {!isConnected ? (
+          <>
+            {!showSetup ? (
+              <Button
+                onClick={() => setShowSetup(true)}
+                className="w-full"
+                variant="outline"
+              >
+                Connect iCloud Calendar
+              </Button>
+            ) : (
+              <div className="space-y-4 p-4 border rounded-lg bg-gray-50">
+                <div className="space-y-2">
+                  <h4 className="font-medium text-sm">Setup Instructions</h4>
+                  <ol className="text-xs text-muted-foreground space-y-1 list-decimal list-inside">
+                    <li>Go to <a href="https://appleid.apple.com" target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">appleid.apple.com</a></li>
+                    <li>Sign in → Security → App-Specific Passwords</li>
+                    <li>Click "Generate password" for "TranscribeAI"</li>
+                    <li>Copy the generated password and paste it below</li>
+                  </ol>
+                </div>
+
+                <div className="space-y-3">
+                  <div className="space-y-2">
+                    <Label htmlFor="icloud-email">iCloud Email</Label>
+                    <Input
+                      id="icloud-email"
+                      type="email"
+                      placeholder="your@icloud.com"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="app-password">App-Specific Password</Label>
+                    <Input
+                      id="app-password"
+                      type="password"
+                      placeholder="xxxx-xxxx-xxxx-xxxx"
+                      value={appPassword}
+                      onChange={(e) => setAppPassword(e.target.value)}
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Generate this from your Apple ID settings
+                    </p>
+                  </div>
+
+                  {error && (
+                    <Alert variant="destructive">
+                      <AlertCircle className="h-4 w-4" />
+                      <AlertDescription>{error}</AlertDescription>
+                    </Alert>
+                  )}
+
+                  <div className="flex gap-2">
+                    <Button
+                      onClick={handleConnect}
+                      disabled={isConnecting}
+                      className="flex-1"
+                    >
+                      {isConnecting ? 'Connecting...' : 'Connect'}
+                    </Button>
+                    <Button
+                      onClick={() => {
+                        setShowSetup(false);
+                        setError('');
+                        setEmail('');
+                        setAppPassword('');
+                      }}
+                      variant="outline"
+                    >
+                      Cancel
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            )}
+          </>
+        ) : (
+          <>
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2 text-green-600">
+                <CheckCircle className="w-5 h-5" />
+                <span className="font-medium">Connected</span>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => onSync(connection.id)}
+                disabled={isSyncing}
+              >
+                {isSyncing ? (
+                  <RefreshCw className="w-4 h-4 animate-spin" />
+                ) : (
+                  <>
+                    <RefreshCw className="w-4 h-4 mr-2" />
+                    Sync Now
+                  </>
+                )}
+              </Button>
+            </div>
+
+            {connection.last_synced_at && (
+              <p className="text-xs text-muted-foreground">
+                Last synced: {new Date(connection.last_synced_at).toLocaleString()}
+              </p>
+            )}
+
+            <div className="space-y-3 pt-2 border-t">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium">Auto-sync</p>
+                  <p className="text-xs text-muted-foreground">
+                    Automatically sync calendar events
+                  </p>
+                </div>
+                <Switch
+                  checked={connection.sync_enabled}
+                  onCheckedChange={(checked) => onToggleSync(connection.id, checked)}
+                />
+              </div>
+
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium">Auto-record</p>
+                  <p className="text-xs text-muted-foreground">
+                    Automatically start recording meetings
+                  </p>
+                </div>
+                <Switch
+                  checked={connection.auto_record_meetings}
+                  onCheckedChange={(checked) => onToggleAutoRecord(connection.id, checked)}
+                />
+              </div>
+            </div>
+
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => onDisconnect(connection.id)}
+              className="w-full text-red-600 hover:text-red-700"
+            >
+              <Trash2 className="w-4 h-4 mr-2" />
+              Disconnect Calendar
+            </Button>
+          </>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 
