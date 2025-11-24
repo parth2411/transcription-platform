@@ -455,6 +455,7 @@ export default function CalendarSettingsPage() {
 
 // Apple Calendar Card Component (uses CalDAV)
 function AppleCalendarCard({
+  isPrimary,
   connection,
   onDisconnect,
   onSync,
@@ -462,6 +463,7 @@ function AppleCalendarCard({
   onToggleAutoRecord,
   syncing
 }: {
+  isPrimary: boolean;
   connection?: CalendarConnection;
   onDisconnect: (id: string) => void;
   onSync: (id: string) => void;
@@ -517,9 +519,14 @@ function AppleCalendarCard({
   };
 
   return (
-    <Card className="border-gray-200">
+    <Card className={`${isPrimary ? 'border-blue-500 bg-blue-50' : 'border-gray-200'}`}>
       <CardHeader>
         <div className="text-4xl mb-3">🍎</div>
+        {isPrimary && (
+          <Badge className="bg-blue-500 text-white mb-2 w-fit">
+            Recommended for you
+          </Badge>
+        )}
         <CardTitle>iCloud Calendar</CardTitle>
         <CardDescription>Apple Calendar, macOS</CardDescription>
       </CardHeader>
@@ -530,7 +537,7 @@ function AppleCalendarCard({
               <Button
                 onClick={() => setShowSetup(true)}
                 className="w-full"
-                variant="outline"
+                variant={isPrimary ? 'default' : 'outline'}
               >
                 Connect iCloud Calendar
               </Button>
