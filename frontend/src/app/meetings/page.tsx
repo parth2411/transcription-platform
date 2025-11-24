@@ -16,7 +16,8 @@ import {
   CheckCircle,
   Circle,
   FileText,
-  Eye
+  Eye,
+  Settings
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
