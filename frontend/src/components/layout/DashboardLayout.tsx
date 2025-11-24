@@ -4,18 +4,19 @@
 import { useState } from 'react'
 import { useAuth } from '@/components/auth/AuthProvider'
 import { Button } from '@/components/ui/button'
-import { 
-  FileText, 
-  Upload, 
-  MessageSquare, 
-  Settings, 
-  User, 
-  LogOut, 
-  Menu, 
+import {
+  FileText,
+  Upload,
+  MessageSquare,
+  Settings,
+  User,
+  LogOut,
+  Menu,
   X,
   FileAudio,
   Plus,
-  Clock
+  Clock,
+  Calendar
 } from 'lucide-react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
@@ -36,6 +37,7 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
     { name: 'Library', href: '/transcriptions', icon: FileAudio },
     { name: 'Meetings', href: '/meetings', icon: Clock },
     { name: 'Knowledge Base', href: '/knowledge', icon: MessageSquare },
+    { name: 'Calendar Settings', href: '/settings/calendar', icon: Calendar },
     { name: 'Settings', href: '/settings', icon: Settings },
   ]
 
@@ -45,20 +47,30 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
     if (href === '/dashboard') {
       return pathname === href
     }
-    
+
     // Special handling for transcription routes
     if (href === '/transcriptions/new') {
       return pathname === '/transcriptions/new'
     }
-    
+
     if (href === '/transcriptions') {
       // Active for /transcriptions but NOT for /transcriptions/new
-      return pathname === '/transcriptions' || 
-             (pathname.startsWith('/transcriptions/') && 
+      return pathname === '/transcriptions' ||
+             (pathname.startsWith('/transcriptions/') &&
               pathname !== '/transcriptions/new')
     }
-    
-    // For other routes (knowledge, settings), use normal startsWith
+
+    // Special handling for settings routes
+    if (href === '/settings/calendar') {
+      return pathname === '/settings/calendar'
+    }
+
+    if (href === '/settings') {
+      // Active for /settings but NOT for /settings/calendar or other sub-pages
+      return pathname === '/settings'
+    }
+
+    // For other routes (knowledge), use normal startsWith
     return pathname.startsWith(href)
   }
 
