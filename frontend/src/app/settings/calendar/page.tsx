@@ -670,13 +670,13 @@ function AppleCalendarCard({
             </div>
 
             <Button
-              variant="outline"
+              variant="destructive"
               size="sm"
+              className="w-full"
               onClick={() => onDisconnect(connection.id)}
-              className="w-full text-red-600 hover:text-red-700"
             >
               <Trash2 className="w-4 h-4 mr-2" />
-              Disconnect Calendar
+              Disconnect
             </Button>
           </>
         )}
