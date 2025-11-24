@@ -59,17 +59,7 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
               pathname !== '/transcriptions/new')
     }
 
-    // Special handling for settings routes
-    if (href === '/settings/calendar') {
-      return pathname === '/settings/calendar'
-    }
-
-    if (href === '/settings') {
-      // Active for /settings but NOT for /settings/calendar or other sub-pages
-      return pathname === '/settings'
-    }
-
-    // For other routes (knowledge), use normal startsWith
+    // For other routes (knowledge, settings), use normal startsWith
     return pathname.startsWith(href)
   }
 
