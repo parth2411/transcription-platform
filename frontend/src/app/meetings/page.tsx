@@ -174,14 +174,22 @@ export default function MeetingsPage() {
               Your synced calendar meetings
             </p>
           </div>
-          <Button
-            onClick={handleRefresh}
-            variant="outline"
-            disabled={refreshing}
-          >
-            <RefreshCw className={`w-4 h-4 mr-2 ${refreshing ? 'animate-spin' : ''}`} />
-            Refresh
-          </Button>
+          <div className="flex gap-2">
+            <Link href="/settings/calendar">
+              <Button variant="outline">
+                <Settings className="w-4 h-4 mr-2" />
+                Calendar Settings
+              </Button>
+            </Link>
+            <Button
+              onClick={handleRefresh}
+              variant="outline"
+              disabled={refreshing}
+            >
+              <RefreshCw className={`w-4 h-4 mr-2 ${refreshing ? 'animate-spin' : ''}`} />
+              Refresh
+            </Button>
+          </div>
         </div>
 
         {/* Stats Cards */}
