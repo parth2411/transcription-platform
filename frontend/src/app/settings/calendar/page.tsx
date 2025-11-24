@@ -327,6 +327,7 @@ export default function CalendarSettingsPage() {
 
           {/* Apple iCloud */}
           <AppleCalendarCard
+            isPrimary={platform?.primarySuggestion === 'apple'}
             connection={getConnectionForProvider('apple')}
             onDisconnect={(id: string) => handleDisconnectCalendar(id, 'apple')}
             onSync={handleSyncCalendar}
