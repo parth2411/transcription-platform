@@ -17,6 +17,7 @@ from ..models import User, CalendarConnection, Meeting
 from ..services.auth_service import get_current_user
 from ..services.calendar_service import CalendarService
 from ..services.microsoft_calendar_service import MicrosoftCalendarService
+from ..services.apple_calendar_service import AppleCalendarService
 from ..config import settings
 
 logger = logging.getLogger(__name__)
@@ -25,6 +26,7 @@ router = APIRouter()
 # Initialize services
 google_calendar_service = CalendarService()
 microsoft_calendar_service = MicrosoftCalendarService()
+apple_calendar_service = AppleCalendarService()
 
 # Pydantic models for request/response
 class CalendarConnectionResponse(BaseModel):
@@ -299,6 +301,172 @@ async def microsoft_calendar_callback(
 
 
 # ==========================================
+# APPLE CALENDAR (iCloud) - CalDAV
+# ==========================================
+
+class AppleCalendarSetupRequest(BaseModel):
+    email: str
+    app_password: str
+    calendar_id: Optional[str] = "all"  # "all" or specific calendar URL
+
+@router.post("/apple/setup")
+async def setup_apple_calendar(
+    setup_data: AppleCalendarSetupRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Setup Apple iCloud Calendar connection using CalDAV
+
+    User must provide:
+    - iCloud email
+    - App-specific password (generated from appleid.apple.com)
+
+    Steps for users:
+    1. Go to https://appleid.apple.com
+    2. Sign in → Security → App-Specific Passwords
+    3. Generate password for "TranscribeAI"
+    4. Enter email and password here
+    """
+    try:
+        # Verify credentials
+        is_valid = apple_calendar_service.verify_credentials(
+            email=setup_data.email,
+            app_password=setup_data.app_password
+        )
+
+        if not is_valid:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid iCloud credentials. Please check your email and app-specific password."
+            )
+
+        # Get list of calendars
+        calendars = apple_calendar_service.get_calendars(
+            email=setup_data.email,
+            app_password=setup_data.app_password
+        )
+
+        # Determine calendar name (include email for Apple)
+        import json as json_lib
+        calendar_name = f"{setup_data.email} - All Calendars"
+        if setup_data.calendar_id and setup_data.calendar_id != "all":
+            matching_cal = next((c for c in calendars if c["url"] == setup_data.calendar_id), None)
+            if matching_cal:
+                calendar_name = f"{setup_data.email} - {matching_cal['name']}"
+
+        # Check if connection already exists
+        existing_connection = db.query(CalendarConnection).filter(
+            CalendarConnection.user_id == current_user.id,
+            CalendarConnection.provider == "apple"
+        ).first()
+
+        if existing_connection:
+            # Update existing connection
+            # Store email in sync_token as JSON metadata
+            existing_connection.sync_token = json_lib.dumps({"email": setup_data.email})
+            existing_connection.access_token = setup_data.app_password  # Store app password securely
+            existing_connection.calendar_id = setup_data.calendar_id
+            existing_connection.calendar_name = calendar_name
+            existing_connection.is_active = True
+            existing_connection.sync_enabled = True
+            connection = existing_connection
+        else:
+            # Create new connection
+            # Store email in sync_token as JSON metadata
+            connection = CalendarConnection(
+                user_id=current_user.id,
+                provider="apple",
+                access_token=setup_data.app_password,  # Store app password
+                calendar_id=setup_data.calendar_id,
+                calendar_name=calendar_name,
+                sync_token=json_lib.dumps({"email": setup_data.email}),
+                is_active=True,
+                sync_enabled=True
+            )
+            db.add(connection)
+
+        db.commit()
+        db.refresh(connection)
+
+        # Initial sync
+        try:
+            synced_count = apple_calendar_service.sync_calendar_events(
+                db=db,
+                calendar_connection=connection,
+                user_id=str(current_user.id)
+            )
+            logger.info(f"Initial sync completed: {synced_count} events")
+        except Exception as sync_error:
+            logger.warning(f"Initial sync failed: {sync_error}")
+
+        logger.info(f"Apple Calendar connected for user {current_user.id}")
+
+        return {
+            "success": True,
+            "connection_id": str(connection.id),
+            "calendar_name": calendar_name,
+            "calendars": calendars,
+            "message": "Apple Calendar connected successfully"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error setting up Apple Calendar: {e}")
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to setup Apple Calendar: {str(e)}"
+        )
+
+
+@router.get("/apple/calendars")
+async def list_apple_calendars(
+    email: str = Query(...),
+    app_password: str = Query(...),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    List all available iCloud calendars for the user
+
+    Used to let user choose which calendar to sync
+    """
+    try:
+        # Verify credentials first
+        is_valid = apple_calendar_service.verify_credentials(
+            email=email,
+            app_password=app_password
+        )
+
+        if not is_valid:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid credentials"
+            )
+
+        # Get calendars
+        calendars = apple_calendar_service.get_calendars(
+            email=email,
+            app_password=app_password
+        )
+
+        return {
+            "success": True,
+            "calendars": calendars
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error listing Apple calendars: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to list calendars: {str(e)}"
+        )
+
+
+# ==========================================
 # CALENDAR CONNECTION MANAGEMENT
 # ==========================================
 
@@ -546,11 +714,31 @@ async def sync_specific_calendar(
         )
 
     try:
-        meetings = CalendarService.sync_calendar_events(connection, db)
+        # Use appropriate service based on provider
+        if connection.provider == "google":
+            meetings = CalendarService.sync_calendar_events(connection, db)
+            synced_count = len(meetings)
+        elif connection.provider == "microsoft":
+            synced_count = microsoft_calendar_service.sync_calendar_events(
+                db=db,
+                calendar_connection=connection,
+                user_id=str(current_user.id)
+            )
+        elif connection.provider == "apple":
+            synced_count = apple_calendar_service.sync_calendar_events(
+                db=db,
+                calendar_connection=connection,
+                user_id=str(current_user.id)
+            )
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Unsupported calendar provider: {connection.provider}"
+            )
 
         return SyncResponse(
             success=True,
-            meetings_synced=len(meetings),
+            meetings_synced=synced_count,
             last_sync=connection.last_synced_at.isoformat() if connection.last_synced_at else None
         )
 
