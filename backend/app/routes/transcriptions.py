@@ -773,6 +773,7 @@ async def list_transcriptions(
     page: int = 1,
     per_page: int = 20,
     status_filter: Optional[str] = None,
+    source_type: Optional[str] = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -782,9 +783,12 @@ async def list_transcriptions(
     try:
         # Build query
         query = db.query(Transcription).filter(Transcription.user_id == current_user.id)
-        
+
         if status_filter:
             query = query.filter(Transcription.status == status_filter)
+
+        if source_type:
+            query = query.filter(Transcription.source_type == source_type)
         
         # Get total count
         total = query.count()
