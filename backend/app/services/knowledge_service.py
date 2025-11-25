@@ -53,7 +53,8 @@ class KnowledgeService:
         query_text: str,
         limit: int = 5,
         similarity_threshold: float = 0.3,
-        folder_id: Optional[str] = None
+        folder_id: Optional[str] = None,
+        source_type: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Query knowledge base using pgvector similarity search.
@@ -64,6 +65,7 @@ class KnowledgeService:
             limit: Maximum results to return
             similarity_threshold: Minimum similarity score (0-1)
             folder_id: Optional folder ID to filter results
+            source_type: Optional source type to filter (meeting, upload, recording)
 
         Returns:
             Dict with answer, sources, and query_id
