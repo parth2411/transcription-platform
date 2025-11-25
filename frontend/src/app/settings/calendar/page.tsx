@@ -21,13 +21,18 @@ import {
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
+import Image from 'next/image';
 import {
   detectUserPlatform,
   getPlatformDisplayName,
   getCalendarIcon,
+  getCalendarIconPath,
   getCalendarDisplayName,
   getCalendarDescription
 } from '@/lib/platform-detection';
+import appleIcon from '@/assets/apple-logo.png';
+import outlookIcon from '@/assets/outlook.png';
+import googleIcon from '@/assets/search.png';
 
 interface CalendarConnection {
   id: string;
