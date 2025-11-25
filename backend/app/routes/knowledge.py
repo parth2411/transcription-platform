@@ -18,6 +18,7 @@ class QueryRequest(BaseModel):
     query: str
     limit: Optional[int] = 5
     folder_id: Optional[str] = None  # Filter by folder
+    source_type: Optional[str] = None  # Filter by source type (meeting, upload, recording)
 
 class QueryResponse(BaseModel):
     answer: str
