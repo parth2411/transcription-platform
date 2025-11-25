@@ -68,6 +68,7 @@ class Transcription(Base):
 
     # Processing
     status = Column(String(50), default="pending")  # pending, processing, completed, failed
+    source_type = Column(String(20), default="upload")  # upload, meeting, recording
     language = Column(String(10), default="auto")
     confidence_score = Column(Float)
     
