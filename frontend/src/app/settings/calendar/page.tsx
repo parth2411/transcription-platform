@@ -527,7 +527,15 @@ function AppleCalendarCard({
   return (
     <Card className={`${isPrimary ? 'border-blue-500 bg-blue-50' : 'border-gray-200'}`}>
       <CardHeader>
-        <div className="text-4xl mb-3">🍎</div>
+        <div className="w-12 h-12 mb-3 relative">
+          <Image
+            src={appleIcon}
+            alt="iCloud Calendar icon"
+            width={48}
+            height={48}
+            className="object-contain"
+          />
+        </div>
         {isPrimary && (
           <Badge className="bg-blue-500 text-white mb-2 w-fit">
             Recommended for you
@@ -715,10 +723,31 @@ function CalendarProviderCard({
   const isConnected = !!connection;
   const isSyncing = syncing === connection?.id;
 
+  const getProviderIcon = () => {
+    switch (provider) {
+      case 'google':
+        return googleIcon;
+      case 'microsoft':
+        return outlookIcon;
+      case 'apple':
+        return appleIcon;
+      default:
+        return googleIcon;
+    }
+  };
+
   return (
     <Card className={`${isPrimary ? 'border-blue-500 bg-blue-50' : 'border-gray-200'}`}>
       <CardHeader>
-        <div className="text-4xl mb-3">{getCalendarIcon(provider)}</div>
+        <div className="w-12 h-12 mb-3 relative">
+          <Image
+            src={getProviderIcon()}
+            alt={`${getCalendarDisplayName(provider)} icon`}
+            width={48}
+            height={48}
+            className="object-contain"
+          />
+        </div>
         {isPrimary && (
           <Badge className="bg-blue-500 text-white mb-2 w-fit">
             Recommended for you
