@@ -263,13 +263,35 @@ export default function EnhancedTranscriptionsPage() {
               </div>
 
               <div className="flex gap-2 flex-wrap">
+                {/* Category Filter */}
+                <div className="flex border border-gray-300 rounded-lg overflow-hidden">
+                  <button
+                    onClick={() => setSourceTypeFilter('all')}
+                    className={`px-4 py-2 text-sm font-medium ${sourceTypeFilter === 'all' ? 'bg-blue-50 text-blue-600 border-b-2 border-blue-600' : 'text-gray-600 hover:bg-gray-50'}`}
+                  >
+                    All
+                  </button>
+                  <button
+                    onClick={() => setSourceTypeFilter('meeting')}
+                    className={`px-4 py-2 text-sm font-medium border-l ${sourceTypeFilter === 'meeting' ? 'bg-blue-50 text-blue-600 border-b-2 border-blue-600' : 'text-gray-600 hover:bg-gray-50'}`}
+                  >
+                    Meetings
+                  </button>
+                  <button
+                    onClick={() => setSourceTypeFilter('upload')}
+                    className={`px-4 py-2 text-sm font-medium border-l ${sourceTypeFilter === 'upload' ? 'bg-blue-50 text-blue-600 border-b-2 border-blue-600' : 'text-gray-600 hover:bg-gray-50'}`}
+                  >
+                    Uploads
+                  </button>
+                </div>
+
                 {/* Folder Filter */}
                 <select
                   value={selectedFolder || ''}
                   onChange={(e) => setSelectedFolder(e.target.value || null)}
                   className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
                 >
-                  <option value="">All Transcriptions</option>
+                  <option value="">All Folders</option>
                   <option value="favorites">Favorites</option>
                   {folders.map((folder) => (
                     <option key={folder.id} value={folder.id}>
