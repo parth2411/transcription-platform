@@ -111,6 +111,7 @@ class KnowledgeService:
               AND tc.embedding IS NOT NULL
               AND 1 - (tc.embedding <=> CAST(:query_embedding AS vector)) > :threshold
               {folder_filter}
+              {source_type_filter}
             ORDER BY tc.embedding <=> CAST(:query_embedding AS vector)
             LIMIT :limit
         """), params).fetchall()
