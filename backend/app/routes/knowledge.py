@@ -77,7 +77,8 @@ async def query_knowledge_base(
             user_id=current_user.id,
             query_text=query_request.query,
             limit=query_request.limit,
-            folder_id=query_request.folder_id
+            folder_id=query_request.folder_id,
+            source_type=query_request.source_type
         )
         
         return QueryResponse(
