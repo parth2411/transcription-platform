@@ -57,6 +57,7 @@ export default function EnhancedKnowledgePage() {
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
+  const [chatMode, setChatMode] = useState<'all' | 'meetings'>('all')
   const [stats, setStats] = useState<KnowledgeStats | null>(null)
   const [history, setHistory] = useState<QueryHistory[]>([])
   const [showHistory, setShowHistory] = useState(false)
