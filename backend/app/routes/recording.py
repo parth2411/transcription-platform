@@ -104,6 +104,7 @@ async def start_recording(
             user_id=current_user.id,
             title=f"{meeting.title} - Recording",
             status="processing",
+            source_type="meeting",
             language="auto",
             generate_summary=True,
             speaker_diarization=True,
