@@ -59,6 +59,7 @@ interface Tag {
   id: string
   name: string
   color: string
+  usage_count: number
 }
 
 export default function EnhancedTranscriptionsPage() {
@@ -126,7 +127,12 @@ export default function EnhancedTranscriptionsPage() {
 
       if (response.ok) {
         const result = await response.json()
-        setTags(result.tags)
+        // Ensure all tags have usage_count field
+        const tagsWithCount = result.tags.map((tag: any) => ({
+          ...tag,
+          usage_count: tag.usage_count || 0
+        }))
+        setTags(tagsWithCount)
       }
     } catch (error) {
       console.error('Failed to fetch tags:', error)

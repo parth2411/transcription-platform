@@ -22,7 +22,8 @@ import {
   BookOpen,
   Search,
   History,
-  Lightbulb
+  Lightbulb,
+  Calendar
 } from 'lucide-react'
 
 interface Message {
