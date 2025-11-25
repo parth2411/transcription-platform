@@ -69,6 +69,7 @@ export default function EnhancedTranscriptionsPage() {
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState('all')
+  const [sourceTypeFilter, setSourceTypeFilter] = useState<string>('all')
   const [selectedFolder, setSelectedFolder] = useState<string | null>(null)
   const [currentPage, setCurrentPage] = useState(1)
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid')
@@ -80,7 +81,7 @@ export default function EnhancedTranscriptionsPage() {
     fetchTranscriptions()
     fetchTags()
     fetchFolders()
-  }, [token, currentPage, statusFilter, selectedFolder])
+  }, [token, currentPage, statusFilter, sourceTypeFilter, selectedFolder])
 
   const fetchTranscriptions = async () => {
     try {
