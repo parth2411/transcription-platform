@@ -75,8 +75,9 @@ class KnowledgeService:
         query_embedding = self.model.encode(query_text).tolist()
         vector_str = "[" + ",".join(str(v) for v in query_embedding) + "]"
 
-        # Build query with optional folder filter
+        # Build query with optional folder and source_type filters
         folder_filter = ""
+        source_type_filter = ""
         params = {
             "query_embedding": vector_str,
             "user_id": str(user_id),
@@ -87,6 +88,10 @@ class KnowledgeService:
         if folder_id:
             folder_filter = "AND t.folder_id = :folder_id"
             params["folder_id"] = folder_id
+
+        if source_type:
+            source_type_filter = "AND t.source_type = :source_type"
+            params["source_type"] = source_type
 
         # Search using pgvector (cosine similarity)
         # Uses <=> operator for cosine distance (1 - similarity)
