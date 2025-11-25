@@ -202,6 +202,26 @@ export default function EnhancedKnowledgePage() {
             <p className="text-gray-600 mt-1">Ask anything about your transcriptions</p>
           </div>
 
+          {/* Mode Toggle */}
+          <div className="flex gap-2">
+            <Button
+              variant={chatMode === 'all' ? 'default' : 'outline'}
+              onClick={() => setChatMode('all')}
+              className="flex-1"
+            >
+              <MessageSquare className="w-4 h-4 mr-2" />
+              Ask Anything
+            </Button>
+            <Button
+              variant={chatMode === 'meetings' ? 'default' : 'outline'}
+              onClick={() => setChatMode('meetings')}
+              className="flex-1"
+            >
+              <Calendar className="w-4 h-4 mr-2" />
+              Chat with Meetings
+            </Button>
+          </div>
+
           {/* Chat Container */}
           <Card className="h-[600px] flex flex-col">
             {/* Messages */}
