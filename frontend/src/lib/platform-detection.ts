@@ -82,6 +82,22 @@ export function getPlatformDisplayName(os: string): string {
   }
 }
 
+export function getCalendarIconPath(provider: string): string {
+  switch (provider) {
+    case 'google':
+      return '/src/assets/search.png';
+    case 'microsoft':
+    case 'outlook':
+      return '/src/assets/outlook.png';
+    case 'icloud':
+    case 'apple':
+      return '/src/assets/apple-logo.png';
+    default:
+      return '/src/assets/search.png';
+  }
+}
+
+// Legacy emoji function (kept for backward compatibility)
 export function getCalendarIcon(provider: string): string {
   switch (provider) {
     case 'google':
