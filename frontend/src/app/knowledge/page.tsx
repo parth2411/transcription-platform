@@ -137,7 +137,8 @@ export default function EnhancedKnowledgePage() {
         },
         body: JSON.stringify({
           query: input,
-          limit: 5
+          limit: 5,
+          source_type: chatMode === 'meetings' ? 'meeting' : null
         }),
       })
 
