@@ -359,8 +359,18 @@ export default function CalendarSettingsPage() {
                     className="flex items-center justify-between p-4 border rounded-lg"
                   >
                     <div className="flex items-center gap-4">
-                      <div className="text-2xl">
-                        {getCalendarIcon(connection.provider)}
+                      <div className="w-8 h-8 relative">
+                        <Image
+                          src={
+                            connection.provider === 'google' ? googleIcon :
+                            connection.provider === 'microsoft' ? outlookIcon :
+                            appleIcon
+                          }
+                          alt={`${getCalendarDisplayName(connection.provider)} icon`}
+                          width={32}
+                          height={32}
+                          className="object-contain"
+                        />
                       </div>
                       <div>
                         <p className="font-medium">
