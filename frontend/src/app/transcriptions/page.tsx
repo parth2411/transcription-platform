@@ -89,6 +89,7 @@ export default function EnhancedTranscriptionsPage() {
         page: currentPage.toString(),
         per_page: perPage.toString(),
         ...(statusFilter !== 'all' && { status_filter: statusFilter }),
+        ...(sourceTypeFilter !== 'all' && { source_type: sourceTypeFilter }),
         ...(selectedFolder && selectedFolder !== 'favorites' && { folder_id: selectedFolder })
       })
 
