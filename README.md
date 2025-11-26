@@ -31,7 +31,7 @@
 
 ### Prerequisites
 - Docker & Docker Compose (recommended)
-- OR: Python 3.11+, Node.js 18+, PostgreSQL, Redis
+- OR: Python 3.11+, Node.js 18+, PostgreSQL (Superbase), Redis
 
 ### 1. Clone Repository
 ```bash
