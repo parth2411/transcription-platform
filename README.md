@@ -104,8 +104,8 @@ transcription-platform/
 - **Processing**: FFmpeg, yt-dlp
 
 ### Frontend
-- **Framework**: Next.js 14 (App Router)
-- **UI**: React 18, TailwindCSS, Shadcn UI
+- **Framework**: Next.js (App Router)
+- **UI**: React, TailwindCSS, Shadcn UI
 - **State**: TanStack Query
 - **HTTP**: Axios
 
