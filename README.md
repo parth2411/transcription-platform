@@ -11,7 +11,7 @@
 
 ### Core Capabilities
 - Audio & Video Transcription (Groq Whisper API)
-- AI-Powered Summarization (LLaMA 3.1)
+- AI-Powered Summarization
 - Speaker Diarization (PyAnnote Audio)
 - Real-Time Recording & Transcription
 - Vector-Based Knowledge Base with RAG
