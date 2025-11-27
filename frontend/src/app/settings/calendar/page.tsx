@@ -30,9 +30,6 @@ import {
   getCalendarDisplayName,
   getCalendarDescription
 } from '@/lib/platform-detection';
-import appleIcon from '@/assets/apple-logo.png';
-import outlookIcon from '@/assets/outlook.png';
-import googleIcon from '@/assets/search.png';
 
 interface CalendarConnection {
   id: string;
@@ -362,9 +359,9 @@ export default function CalendarSettingsPage() {
                       <div className="w-8 h-8 relative">
                         <Image
                           src={
-                            connection.provider === 'google' ? googleIcon :
-                            connection.provider === 'microsoft' ? outlookIcon :
-                            appleIcon
+                            connection.provider === 'google' ? '/icons/search.png' :
+                            connection.provider === 'microsoft' ? '/icons/outlook.png' :
+                            '/icons/apple-logo.png'
                           }
                           alt={`${getCalendarDisplayName(connection.provider)} icon`}
                           width={32}
@@ -539,7 +536,7 @@ function AppleCalendarCard({
       <CardHeader>
         <div className="w-12 h-12 mb-3 relative">
           <Image
-            src={appleIcon}
+            src="/icons/apple-logo.png"
             alt="iCloud Calendar icon"
             width={48}
             height={48}
@@ -733,16 +730,16 @@ function CalendarProviderCard({
   const isConnected = !!connection;
   const isSyncing = syncing === connection?.id;
 
-  const getProviderIcon = () => {
+  const getProviderIconPath = () => {
     switch (provider) {
       case 'google':
-        return googleIcon;
+        return '/icons/search.png';
       case 'microsoft':
-        return outlookIcon;
+        return '/icons/outlook.png';
       case 'apple':
-        return appleIcon;
+        return '/icons/apple-logo.png';
       default:
-        return googleIcon;
+        return '/icons/search.png';
     }
   };
 
@@ -751,7 +748,7 @@ function CalendarProviderCard({
       <CardHeader>
         <div className="w-12 h-12 mb-3 relative">
           <Image
-            src={getProviderIcon()}
+            src={getProviderIconPath()}
             alt={`${getCalendarDisplayName(provider)} icon`}
             width={48}
             height={48}
