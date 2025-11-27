@@ -85,15 +85,15 @@ export function getPlatformDisplayName(os: string): string {
 export function getCalendarIconPath(provider: string): string {
   switch (provider) {
     case 'google':
-      return '/src/assets/search.png';
+      return '/icons/search.png';
     case 'microsoft':
     case 'outlook':
-      return '/src/assets/outlook.png';
+      return '/icons/outlook.png';
     case 'icloud':
     case 'apple':
-      return '/src/assets/apple-logo.png';
+      return '/icons/apple-logo.png';
     default:
-      return '/src/assets/search.png';
+      return '/icons/search.png';
   }
 }
 
