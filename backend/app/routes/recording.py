@@ -227,11 +227,36 @@ async def stop_recording(
                 transcription.status = "completed"
                 transcription.transcription_text = ""
 
+        # Generate AI summary if we have transcript
+        if transcript_chunks and transcription and transcription.transcription_text:
+            try:
+                from app.services.groq_service import GroqService
+                groq_service = GroqService()
+
+                # Generate summary
+                summary_prompt = f"""Generate a concise meeting summary from this transcript. Include:
+1. Key Discussion Points (3-5 bullet points)
+2. Decisions Made
+3. Next Steps
+
+Transcript:
+{transcription.transcription_text[:4000]}  # Limit to avoid token limits
+"""
+
+                summary = await groq_service.generate_summary(summary_prompt)
+
+                # Update transcription with summary
+                if summary:
+                    transcription.summary_text = summary
+                    meeting.summary = summary  # Also save to meeting
+                    logger.info(f"Generated AI summary for meeting {meeting.id}")
+
+            except Exception as e:
+                logger.error(f"Failed to generate summary: {e}")
+                # Don't fail the whole request if summary generation fails
+
         # Update meeting summary status
-        if transcript_chunks:
-            meeting.recording_status = "completed"
-        else:
-            meeting.recording_status = "completed"
+        meeting.recording_status = "completed"
 
         db.commit()
 
@@ -245,7 +270,7 @@ async def stop_recording(
             meeting_id=str(meeting.id),
             transcription_id=str(meeting.transcription_id) if meeting.transcription_id else None,
             duration_seconds=duration_seconds,
-            status="processing"
+            status="completed"
         )
 
     except HTTPException:
