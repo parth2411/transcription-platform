@@ -20,7 +20,8 @@ import {
   Mic,
   StopCircle,
   Save,
-  Trash2
+  Trash2,
+  Sparkles
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
@@ -435,6 +436,28 @@ export default function MeetingDetailPage({ params }: { params: { id: string } }
                 </div>
               </CardContent>
             </Card>
+
+            {/* AI Summary Card */}
+            {meeting.summary && meeting.recording_status === 'completed' && (
+              <Card className="mt-4 border-blue-200 bg-blue-50">
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2 text-blue-900">
+                    <Sparkles className="w-5 h-5" />
+                    AI-Generated Summary
+                  </CardTitle>
+                  <CardDescription className="text-blue-700">
+                    Automatically generated after recording
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <div className="prose prose-sm max-w-none">
+                    <div className="whitespace-pre-wrap text-sm text-gray-800 bg-white p-4 rounded-lg border">
+                      {meeting.summary}
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
           </TabsContent>
 
           {/* Notes Tab */}
