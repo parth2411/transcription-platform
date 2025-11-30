@@ -39,6 +39,7 @@ interface Meeting {
   participants: string | null;
   status: string;
   recording_status: string;
+  summary: string | null;
 }
 
 export default function MeetingDetailPage({ params }: { params: { id: string } }) {
