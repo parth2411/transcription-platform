@@ -346,7 +346,13 @@ export default function MeetingDetailPage({ params }: { params: { id: string } }
                 </a>
               )}
               {isUpcoming(meeting.start_time) && (
-                <Button className="bg-red-600 hover:bg-red-700 text-white">
+                <Button
+                  className="bg-red-600 hover:bg-red-700 text-white"
+                  onClick={() => {
+                    // Switch to Recording tab
+                    setActiveTab('recording');
+                  }}
+                >
                   <Video className="w-4 h-4 mr-2" />
                   Start Recording
                 </Button>
