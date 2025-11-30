@@ -679,12 +679,9 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - ✨ Knowledge base with RAG
 - 🐛 Bug fixes and performance improvements
 
----
 
 <div align="center">
 
 **Made with ❤️ for productive meetings**
-
-[Report Bug](https://github.com/yourusername/transcription-platform/issues) · [Request Feature](https://github.com/yourusername/transcription-platform/issues) · [Documentation](https://github.com/yourusername/transcription-platform/wiki)
 
 </div>
