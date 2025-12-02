@@ -148,18 +148,7 @@ transcription-platform/
 │   │   ├── components/    # React components
 │   │   │   ├── recording/        # Recording controls
 │   │   │   ├── folders/          # Folder management
-│   │   │   └── tags/             # Tag management
-│   │   └── lib/
-│   │       └── platform-detection.ts  # OS detection
-│   └── package.json
-│
-├── public/
-│   └── icons/             # Calendar provider icons
-│       ├── search.png          # Google
-│       ├── outlook.png         # Microsoft
-│       └── apple-logo.png      # Apple
-│
-├── .env.example           # Environment template
+
 
 ## 🛠️ Technology Stack
 
