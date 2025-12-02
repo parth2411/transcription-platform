@@ -110,39 +110,6 @@ docker-compose up -d
 - **Backend API**: http://localhost:8000
 - **API Docs**: http://localhost:8000/docs
 
-## 📐 Architecture
-
-```
-transcription-platform/
-├── backend/                 # FastAPI application
-│   ├── app/
-│   │   ├── routes/         # API endpoints
-│   │   │   ├── calendar.py      # Calendar integration
-│   │   │   ├── meetings.py      # Meeting management
-│   │   │   ├── recording.py     # Real-time recording
-│   │   │   ├── transcriptions.py
-│   │   │   └── knowledge.py     # Knowledge base & chat
-│   │   ├── services/       # Business logic
-│   │   │   ├── google_calendar_service.py
-│   │   │   ├── microsoft_calendar_service.py
-│   │   │   ├── apple_calendar_service.py
-│   │   │   ├── realtime_transcription_service.py
-│   │   │   ├── transcription_service.py
-│   │   │   ├── knowledge_service.py
-│   │   │   ├── diarization_service.py
-│   │   │   └── groq_service.py
-│   │   ├── models.py       # Database models
-│   │   └── config.py       # Configuration
-│   └── requirements.txt
-│
-├── frontend/               # Next.js application
-│   ├── src/
-│   │   ├── app/           # App Router pages
-│   │   │   ├── page.tsx          # Landing page
-│   │   │   ├── dashboard/        # Main dashboard
-│   │   │   ├── meetings/   
-
-
 ## 🛠️ Technology Stack
 
 ### Backend
