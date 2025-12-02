@@ -160,9 +160,6 @@ transcription-platform/
 │       └── apple-logo.png      # Apple
 │
 ├── .env.example           # Environment template
-├── docker-compose.yml     # Docker setup
-└── README.md             # This file
-```
 
 ## 🛠️ Technology Stack
 
