@@ -140,14 +140,7 @@ transcription-platform/
 │   │   ├── app/           # App Router pages
 │   │   │   ├── page.tsx          # Landing page
 │   │   │   ├── dashboard/        # Main dashboard
-│   │   │   ├── meetings/         # Meeting list & detail
-│   │   │   ├── transcriptions/   # Library with categories
-│   │   │   ├── knowledge/        # AI chat interface
-│   │   │   └── settings/
-│   │   │       └── calendar/     # Calendar connections
-│   │   ├── components/    # React components
-│   │   │   ├── recording/        # Recording controls
-│   │   │   ├── folders/          # Folder management
+│   │   │   ├── meetings/   
 
 
 ## 🛠️ Technology Stack
